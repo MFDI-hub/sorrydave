@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Security :: Cryptography",
 ]
 dependencies = [
-    "rfc9420>=0.5",
+    "rfc9420>=0.6",
     "cryptography>=41",
     "pycryptodome>=3.19",
 ]
@@ -34,6 +34,7 @@ Documentation = "https://github.com/mfdi/PyDAVE#readme"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov", "ruff>=0.8", "mypy>=1.0"]
+docs = ["mkdocs>=1.5,<2", "mkdocs-material>=9.5", "mkdocstrings[python]>=0.24", "pymdown-extensions"]
 
 [tool.setuptools.packages.find]
 where = ["."]

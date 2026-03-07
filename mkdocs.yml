@@ -1,0 +1,60 @@
+site_name: PyDAVE
+site_description: DAVE (Discord Audio/Video End-to-End Encryption) protocol library — pure data and state layer on rfc9420
+site_url: https://github.com/mfdi/PyDAVE
+repo_url: https://github.com/mfdi/PyDAVE
+repo_name: mfdi/PyDAVE
+edit_uri: edit/main/docs/
+copyright: MIT
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            heading_level: 2
+            members_order: source
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.snippets
+  - admonition
+  - tables
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quick start: quickstart.md
+  - API:
+    - Session: api/session.md
+    - Media: api/media.md
+    - Identity: api/identity.md
+    - MLS & opcodes: api/mls.md
+    - Types & exceptions: api/types.md
