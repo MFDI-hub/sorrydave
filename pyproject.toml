@@ -29,8 +29,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/mfdi/PyDAVE"
-Documentation = "https://github.com/mfdi/PyDAVE#readme"
+Repository = "https://github.com/MFDI-hub/sorrydave"
+Documentation = "https://github.com/MFDI-hub/sorrydave#readme"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov", "ruff>=0.8", "mypy>=1.0"]
