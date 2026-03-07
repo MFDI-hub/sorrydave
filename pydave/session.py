@@ -5,7 +5,7 @@ Maps Voice Gateway opcodes to MLS and media transform; no I/O.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from pydave.crypto.ratchet import KeyRatchet
 from pydave.media.transform import FrameDecryptor, FrameEncryptor
@@ -33,19 +33,19 @@ class DaveSession:
         """
         self._local_user_id = local_user_id
         self._protocol_version = protocol_version
-        self._group: Group | None = None
-        self._crypto: DefaultCryptoProvider | None = None
-        self._hpke_private_key: bytes | None = None
-        self._signing_key_der: bytes | None = None
-        self._external_sender: ExternalSenderPackage | None = None
+        self._group: Optional[Group] = None
+        self._crypto: Optional[DefaultCryptoProvider] = None
+        self._hpke_private_key: Optional[bytes] = None
+        self._signing_key_der: Optional[bytes] = None
+        self._external_sender: Optional[ExternalSenderPackage] = None
         # Per-sender KeyRatchet for current epoch (sender_user_id -> KeyRatchet)
-        self._send_ratchet: KeyRatchet | None = None
+        self._send_ratchet: Optional[KeyRatchet] = None
         self._receive_ratchets: dict[int, KeyRatchet] = {}
         self._retention_seconds = 10.0
         # Epoch/transition state
         self._current_epoch = 0
         self._member_leaf_indices: dict[int, int] = {}  # user_id -> leaf_index (when known)
-        self._key_package_bytes: bytes | None = None
+        self._key_package_bytes: Optional[bytes] = None
         self._group_id = b"dave-default-group"
 
     def handle_external_sender_package(self, package_bytes: bytes) -> None:
@@ -63,7 +63,7 @@ class DaveSession:
             self._group = create_group(self._group_id, self._key_package_bytes, self._crypto)
             self._refresh_send_ratchet()
 
-    def prepare_epoch(self, epoch_id: int) -> bytes | None:
+    def prepare_epoch(self, epoch_id: int) -> Optional[bytes]:
         """
         Prepare for new epoch (e.g. after select_protocol_ack or prepare_epoch).
 
@@ -71,7 +71,7 @@ class DaveSession:
             epoch_id (int): Epoch identifier. Only epoch_id == 1 triggers key package creation.
 
         Returns:
-            bytes | None: Opcode 26 (key package) payload if epoch_id == 1, else None.
+            Optional[bytes]: Opcode 26 (key package) payload if epoch_id == 1, else None.
         """
         if epoch_id != 1:
             return None
@@ -86,7 +86,7 @@ class DaveSession:
         self._key_package_bytes = kp_bytes
         return build_key_package_message(kp_bytes)
 
-    def handle_proposals(self, proposal_bytes: bytes) -> bytes | None:
+    def handle_proposals(self, proposal_bytes: bytes) -> Optional[bytes]:
         """
         Process opcode 27 (proposals). Creates commit and optional welcome when applicable.
 
@@ -94,7 +94,7 @@ class DaveSession:
             proposal_bytes (bytes): Serialized proposals message (opcode 27 payload).
 
         Returns:
-            bytes | None: Opcode 28 (commit/welcome) payload if commit was created, else None.
+            Optional[bytes]: Opcode 28 (commit/welcome) payload if commit was created, else None.
         """
         if self._group is None:
             return None
@@ -182,17 +182,17 @@ class DaveSession:
         self._refresh_send_ratchet()
         self._refresh_receive_ratchets()
 
-    def leave_group(self) -> bytes | None:
+    def leave_group(self) -> Optional[bytes]:
         """
         Tear down local MLS group state and optionally return a Remove proposal for self.
 
         Clears group, send/receive ratchets, and member state.
 
         Returns:
-            bytes | None: Serialized Remove proposal bytes to send (e.g. via opcode 27)
+            Optional[bytes]: Serialized Remove proposal bytes to send (e.g. via opcode 27)
                 if session had a group and signing key; otherwise None.
         """
-        remove_proposal_bytes: bytes | None = None
+        remove_proposal_bytes: Optional[bytes] = None
         if self._group is not None and self._signing_key_der is not None:
             try:
                 from pydave.mls.group_state import create_remove_proposal_for_self
@@ -245,7 +245,7 @@ class DaveSession:
             new_ratchets[user_id] = KeyRatchet(base, retention_seconds=self._retention_seconds)
         self._receive_ratchets = new_ratchets
 
-    def _leaf_index_to_user_id(self, leaf_index: int) -> int | None:
+    def _leaf_index_to_user_id(self, leaf_index: int) -> Optional[int]:
         """Resolve leaf index to user ID from tree credential (if available)."""
         if self._group is None:
             return None
