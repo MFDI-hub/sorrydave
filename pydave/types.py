@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Union
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class UnencryptedRange:
     """
     Byte range that must remain plaintext for SFU routing (e.g. codec headers).
@@ -20,7 +20,7 @@ class UnencryptedRange:
     length: int
 
 
-@dataclass(slots=True)
+@dataclass
 class ProtocolSupplementalData:
     """
     Parsed DAVE protocol footer (supplemental data).
@@ -40,7 +40,7 @@ class ProtocolSupplementalData:
     supplemental_size: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class DaveConfiguration:
     """
     Immutable configuration for DAVE protocol version and ciphersuite.
@@ -58,7 +58,7 @@ class DaveConfiguration:
     ratchet_retention_seconds: int = 10
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class IdentityConfig:
     """
     Configuration for identity key storage (ephemeral vs persistent).

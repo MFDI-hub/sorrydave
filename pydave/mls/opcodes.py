@@ -70,7 +70,7 @@ def _read_opaque_varint(data: bytes, offset: int) -> tuple[bytes, int]:
     return data[pos : pos + length], pos + length
 
 
-@dataclass(slots=True)
+@dataclass
 class ExternalSenderPackage:
     """
     Parsed opcode 25: external sender credential and signature key.
@@ -137,7 +137,7 @@ def build_key_package_message(key_package_bytes: bytes) -> bytes:
     return bytes([OPCODE_KEY_PACKAGE]) + key_package_bytes
 
 
-@dataclass(slots=True)
+@dataclass
 class ProposalsMessage:
     """
     Parsed opcode 27: append (proposal messages) or revoke (proposal refs).
