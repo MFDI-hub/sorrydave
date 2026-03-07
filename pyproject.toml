@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pydave"
+version = "0.1.0"
+description = "DAVE (Discord Audio/Video End-to-End Encryption) protocol library — pure data and state layer on rfc9420"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "mfdi" }]
+keywords = ["dave", "e2ee", "mls", "webrtc", "voice", "discord", "rfc9420", "rfc9180"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "rfc9420>=0.5",
+    "cryptography>=41",
+    "pycryptodome>=3.19",
+]
+
+[project.urls]
+Repository = "https://github.com/mfdi/PyDAVE"
+Documentation = "https://github.com/mfdi/PyDAVE#readme"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov", "ruff>=0.8", "mypy>=1.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pydave*"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+src = ["pydave"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip without strict
+    "UP007",  # allow Optional[X] (use X | None if you prefer)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # allow unused imports in __init__ if re-exported
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+show_error_codes = true
+# Ignore dataclass overload error (e.g. overloaded __init__ vs generated one)
+disable_error_code = ["call-overload"]
+
+[[tool.mypy.overrides]]
+module = "Crypto.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "rfc9420.*"
+ignore_missing_imports = true

@@ -11,6 +11,7 @@ from pydave.exceptions import DecryptionError
 
 
 def test_expand_nonce():
+    """expand_nonce_96 produces 12-byte nonce (8 zero bytes + 4-byte LE value)."""
     nonce_12 = expand_nonce_96(0x01020304)
     assert len(nonce_12) == 12
     assert nonce_12[:8] == b"\x00" * 8
@@ -18,6 +19,7 @@ def test_expand_nonce():
 
 
 def test_encrypt_decrypt_full():
+    """Full-frame encrypt/decrypt roundtrip with no unencrypted ranges."""
     key = b"\x00" * 16
     frame = b"hello world"
     interleaved, tag_8 = encrypt_interleaved(key, 0, frame, [])
@@ -36,6 +38,7 @@ def test_encrypt_decrypt_with_ranges():
 
 
 def test_wrong_tag_fails():
+    """Decryption with wrong GCM tag raises DecryptionError."""
     key = b"\x02" * 16
     frame = b"data"
     interleaved, tag_8 = encrypt_interleaved(key, 0, frame, [])

@@ -23,8 +23,21 @@ EPOCH_AUTH_GROUP_SIZE = 5
 def displayable_code(data: bytes, total_digits: int, group_size: int = 5) -> str:
     """
     Encode byte array as displayable numeric code.
-    For each group: next group_size bytes as big-endian int, modulo 10^group_size, zero-padded.
-    total_digits must be a multiple of group_size; group_size < 8.
+
+    Each group uses the next group_size bytes as big-endian int, modulo 10^group_size,
+    zero-padded. total_digits must be a multiple of group_size; group_size must be < 8.
+
+    Args:
+        data (bytes): Raw bytes to encode.
+        total_digits (int): Total digits in output (must be multiple of group_size).
+        group_size (int): Digits per group. Defaults to 5. Must be smaller than 8.
+
+    Returns:
+        str: Zero-padded numeric string (e.g. "12345 67890").
+
+    Raises:
+        ValueError: If total_digits not multiple of group_size, group_size >= 8,
+            or data shorter than required.
     """
     if total_digits % group_size != 0:
         raise ValueError("total_digits must be a multiple of group_size")
@@ -54,9 +67,18 @@ def generate_fingerprint(
 ) -> str:
     """
     Generate 45-digit pairwise verification fingerprint.
-    bufA = V || PubA || Sa, bufB = V || PubB || Sb (Sa/Sb = big-endian 64-bit user IDs).
-    Sort buffers lexicographically, scrypt(sorted_buffers, salt, N=16384, r=8, p=2, dkLen=64).
-    Display: 9 groups of 5 digits.
+
+    Builds bufA = V || PubA || Sa, bufB = V || PubB || Sb (Sa/Sb = big-endian 64-bit user IDs),
+    sorts buffers lexicographically, then scrypt(N=16384, r=8, p=2, dkLen=64). Display: 9 groups of 5.
+
+    Args:
+        local_id (int): Local user ID (64-bit).
+        local_pub (bytes): Local public key bytes.
+        remote_id (int): Remote user ID (64-bit).
+        remote_pub (bytes): Remote public key bytes.
+
+    Returns:
+        str: 45-digit fingerprint (9 groups of 5 digits).
     """
     sa = local_id.to_bytes(8, "big")
     sb = remote_id.to_bytes(8, "big")
@@ -76,7 +98,18 @@ def generate_fingerprint(
 
 
 def epoch_authenticator_display(epoch_authenticator_32_bytes: bytes) -> str:
-    """Display epoch authenticator (32-byte exported secret) as 30-digit code."""
+    """
+    Display epoch authenticator (32-byte exported secret) as 30-digit code.
+
+    Args:
+        epoch_authenticator_32_bytes (bytes): At least 30 bytes of epoch authenticator.
+
+    Returns:
+        str: 30-digit displayable code (6 groups of 5).
+
+    Raises:
+        ValueError: If input is shorter than 30 bytes.
+    """
     if len(epoch_authenticator_32_bytes) < 30:
         raise ValueError("Epoch authenticator must be at least 30 bytes")
     return displayable_code(epoch_authenticator_32_bytes, EPOCH_AUTH_DIGITS, EPOCH_AUTH_GROUP_SIZE)

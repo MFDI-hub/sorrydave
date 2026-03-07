@@ -6,7 +6,7 @@ Production-quality Python library for the **DAVE** (Discord Audio/Video End-to-E
 
 - **MLS integration**: Key packages, external sender handling, proposals, commit/welcome (opcodes 25–30), exporter-based sender keys
 - **Sender key ratchet**: Per-sender, per-epoch keys via MLS-Exporter + HKDF; cache for out-of-order decryption
-- **Frame transform**: Codec-aware encrypt/decrypt (OPUS, VP9, VP8 P-bit), ULEB128, truncated AES128-GCM, DAVE footer (`0xFAFA`)
+- **Frame transform**: Codec-aware encrypt/decrypt (OPUS, VP9, VP8, H264, H265, AV1), ULEB128, truncated AES128-GCM, DAVE footer (`0xFAFA`)
 - **Identity**: Pairwise fingerprint (scrypt) and displayable codes (45-digit / 30-digit)
 
 ## Install
@@ -25,20 +25,22 @@ Requires Python 3.9+, `rfc9420`, `cryptography`, and `pycryptodome`.
 4. On **opcode 27** (Proposals), call `session.handle_proposals(proposal_bytes)`; if it returns bytes, send them as opcode 28.
 5. On **opcode 29** (Announce Commit), call `session.handle_commit(transition_id, commit_bytes)`.
 6. On **opcode 30** (Welcome), call `session.handle_welcome(transition_id, welcome_bytes)`.
-7. On **opcode 22** (Execute Transition), call `session.execute_transition(transition_id)`.
+7. On **opcode 22** (Execute Transition), parse with `parse_execute_transition(payload)` to get `transition_id`, then call `session.execute_transition(transition_id)`.
 8. Use `session.get_encryptor().encrypt(frame, codec="OPUS")` and `session.get_decryptor(sender_id).decrypt(protocol_frame)` for media.
+
+**Error recovery:** On `InvalidCommitError`, send `build_invalid_commit_welcome(transition_id)` as opcode 31 to the voice gateway, then call `session.prepare_epoch(1)` and send the returned key package as opcode 26.
 
 ## API overview
 
-- **`DaveSession`**: `handle_external_sender_package`, `prepare_epoch`, `handle_proposals`, `handle_commit`, `handle_welcome`, `execute_transition`, `get_encryptor`, `get_decryptor`
+- **`DaveSession`**: `handle_external_sender_package`, `prepare_epoch`, `handle_proposals`, `handle_commit`, `handle_welcome`, `execute_transition`, `leave_group`, `get_encryptor`, `get_decryptor`
 - **`FrameEncryptor.encrypt(encoded_frame, codec)`** / **`FrameDecryptor.decrypt(protocol_frame)`**
 - **`generate_fingerprint(local_id, local_pub, remote_id, remote_pub)`** → 45-digit string
 - **`displayable_code(data, total_digits, group_size)`** for epoch authenticator (e.g. 30 digits, group 5)
 
 ## Scope
 
-- **In scope**: MLS state, ratchet, OPUS/VP9/VP8 codec handling, frame encrypt/decrypt, identity fingerprint.
-- **Out of scope**: Voice Gateway WebSocket I/O, SFU silence packets, WebRTC depacketizer patches. H264/H265 and AV1 are deferred.
+- **In scope**: MLS state, ratchet, OPUS/VP9/VP8/H264/H265/AV1 codec handling, frame encrypt/decrypt, identity fingerprint, opcode 22 parse and opcode 31 build for transition and error recovery.
+- **Out of scope**: Voice Gateway WebSocket I/O, SFU silence packets, WebRTC depacketizer patches.
 
 ## License
 

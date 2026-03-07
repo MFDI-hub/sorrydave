@@ -13,7 +13,18 @@ FULL_NONCE_LENGTH = 12  # 96-bit for AES-GCM
 
 
 def uleb128_encode(value: int) -> bytes:
-    """Encode nonnegative integer as ULEB128 (unsigned little-endian base 128)."""
+    """
+    Encode nonnegative integer as ULEB128 (unsigned little-endian base 128).
+
+    Args:
+        value (int): Nonnegative integer to encode.
+
+    Returns:
+        bytes: ULEB128-encoded bytes.
+
+    Raises:
+        ValueError: If value is negative.
+    """
     if value < 0:
         raise ValueError("ULEB128 requires nonnegative integer")
     buf = []
@@ -27,7 +38,16 @@ def uleb128_encode(value: int) -> bytes:
 def uleb128_decode(data: bytes, offset: int = 0) -> tuple[int, int]:
     """
     Decode one ULEB128 value from data starting at offset.
-    Returns (value, new_offset). Raises on invalid or overflow (e.g. > 32-bit for nonce).
+
+    Args:
+        data (bytes): Buffer containing ULEB128-encoded value.
+        offset (int): Start index. Defaults to 0.
+
+    Returns:
+        tuple[int, int]: (decoded value, new_offset past the value).
+
+    Raises:
+        ValueError: On invalid encoding, overflow (e.g. > 64 bits), or truncated data.
     """
     result = 0
     shift = 0
@@ -47,7 +67,17 @@ def uleb128_decode(data: bytes, offset: int = 0) -> tuple[int, int]:
 def expand_nonce_96(truncated_nonce_32: int) -> bytes:
     """
     Expand 32-bit truncated nonce to 96-bit for AES-GCM.
+
     Full nonce = 8 zero bytes || 4-byte truncated nonce (little-endian).
+
+    Args:
+        truncated_nonce_32 (int): 32-bit nonce value.
+
+    Returns:
+        bytes: 12-byte (96-bit) nonce for AES-GCM.
+
+    Raises:
+        ValueError: If value does not fit in 32 bits.
     """
     if not 0 <= truncated_nonce_32 <= 0xFFFFFFFF:
         raise ValueError("Nonce must fit in 32 bits")
@@ -55,7 +85,18 @@ def expand_nonce_96(truncated_nonce_32: int) -> bytes:
 
 
 def _encrypt_gcm(key: bytes, nonce_12: bytes, plaintext: bytes, aad: bytes) -> tuple[bytes, bytes]:
-    """Encrypt with AES128-GCM, return (ciphertext, 8-byte tag)."""
+    """
+    Encrypt with AES128-GCM.
+
+    Args:
+        key (bytes): 16-byte AES key.
+        nonce_12 (bytes): 12-byte nonce.
+        plaintext (bytes): Data to encrypt.
+        aad (bytes): Additional authenticated data.
+
+    Returns:
+        tuple[bytes, bytes]: (ciphertext, 8-byte tag).
+    """
     from Crypto.Cipher import AES
 
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce_12, mac_len=GCM_TAG_LENGTH)
@@ -65,7 +106,22 @@ def _encrypt_gcm(key: bytes, nonce_12: bytes, plaintext: bytes, aad: bytes) -> t
 
 
 def _decrypt_gcm(key: bytes, nonce_12: bytes, ciphertext: bytes, tag_8: bytes, aad: bytes) -> bytes:
-    """Decrypt with AES128-GCM (8-byte tag). Raises DecryptionError on failure."""
+    """
+    Decrypt with AES128-GCM (8-byte tag).
+
+    Args:
+        key (bytes): 16-byte AES key.
+        nonce_12 (bytes): 12-byte nonce.
+        ciphertext (bytes): Encrypted data.
+        tag_8 (bytes): 8-byte GCM authentication tag.
+        aad (bytes): Additional authenticated data.
+
+    Returns:
+        bytes: Decrypted plaintext.
+
+    Raises:
+        DecryptionError: On invalid tag length or GCM verification failure.
+    """
     from Crypto.Cipher import AES
 
     if len(tag_8) != GCM_TAG_LENGTH:
@@ -86,9 +142,18 @@ def encrypt_interleaved(
 ) -> tuple[bytes, bytes]:
     """
     Encrypt frame with interleaved unencrypted ranges.
-    Returns (interleaved_frame_with_ciphertext, tag_8).
-    - Plaintext to encrypt = concatenation of encrypted-range bytes (in order).
-    - AAD = concatenation of unencrypted-range bytes (in order).
+
+    Plaintext to encrypt is the concatenation of encrypted-range bytes (in order).
+    AAD is the concatenation of unencrypted-range bytes (in order).
+
+    Args:
+        key (bytes): 16-byte AES key.
+        nonce_32 (int): 32-bit truncated nonce.
+        frame (bytes): Full frame bytes.
+        unencrypted_ranges (list[UnencryptedRange]): Ranges to leave in plaintext.
+
+    Returns:
+        tuple[bytes, bytes]: (interleaved frame with ciphertext in encrypted ranges, 8-byte tag).
     """
     if not unencrypted_ranges:
         # Full frame encrypted
@@ -139,8 +204,22 @@ def decrypt_interleaved(
     unencrypted_ranges: list[UnencryptedRange],
 ) -> bytes:
     """
-    Decrypt interleaved frame. Reconstructs AAD and ciphertext from ranges, verifies tag.
-    Raises DecryptionError on tag mismatch or reuse.
+    Decrypt interleaved frame.
+
+    Reconstructs AAD and ciphertext from ranges and verifies the tag.
+
+    Args:
+        key (bytes): 16-byte AES key.
+        nonce_32 (int): 32-bit truncated nonce.
+        interleaved (bytes): Frame with ciphertext in encrypted ranges.
+        tag_8 (bytes): 8-byte GCM tag.
+        unencrypted_ranges (list[UnencryptedRange]): Same ranges used during encrypt.
+
+    Returns:
+        bytes: Decrypted frame (plaintext reconstructed with unencrypted ranges in place).
+
+    Raises:
+        DecryptionError: On tag mismatch or invalid data.
     """
     if not unencrypted_ranges:
         nonce_12 = expand_nonce_96(nonce_32)

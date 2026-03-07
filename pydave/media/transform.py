@@ -19,13 +19,104 @@ from pydave.types import ProtocolSupplementalData, UnencryptedRange
 # Minimum footer: 8 tag + 1 nonce byte + 0 ranges + 1 size + 2 magic = 12
 MIN_SUPPLEMENTAL = 8 + 1 + 0 + 1 + 2
 
+# H26X: replace 3-byte start code with 4-byte in unencrypted sections; retry encrypt if start code in ciphertext
+H26X_START_3 = b"\x00\x00\x01"
+H26X_START_4 = b"\x00\x00\x00\x01"
+H26X_RETRY_MAX = 10
+
+
+def _replace_3byte_start_with_4byte(data: bytes) -> bytes:
+    """
+    Replace 3-byte H26x start code with 4-byte in data.
+
+    Args:
+        data (bytes): Segment that may contain 0x000001.
+
+    Returns:
+        bytes: Data with 0x000001 replaced by 0x00000001.
+    """
+    out = []
+    i = 0
+    while i <= len(data) - 3:
+        if data[i : i + 3] == H26X_START_3:
+            out.append(H26X_START_4)
+            i += 3
+        else:
+            out.append(bytes([data[i]]))
+            i += 1
+    out.append(data[i:])
+    return b"".join(out)
+
+
+def _apply_h26x_start_code_expansion(
+    frame: bytes, ranges: list[UnencryptedRange]
+) -> tuple[bytes, list[UnencryptedRange]]:
+    """
+    Replace 3-byte start codes with 4-byte in unencrypted sections (protocol requirement).
+
+    Args:
+        frame (bytes): H264/H265 frame.
+        ranges (list[UnencryptedRange]): Unencrypted ranges to expand within.
+
+    Returns:
+        tuple[bytes, list[UnencryptedRange]]: (new_frame, new_ranges) with updated offsets/lengths.
+    """
+    if not ranges:
+        return frame, []
+    sorted_ranges = sorted(ranges, key=lambda r: r.offset)
+    parts = []
+    new_ranges: list[UnencryptedRange] = []
+    offset_delta = 0
+    last = 0
+    for r in sorted_ranges:
+        parts.append(frame[last : r.offset])
+        seg = frame[r.offset : r.offset + r.length]
+        expanded = _replace_3byte_start_with_4byte(seg)
+        new_len = len(expanded)
+        new_ranges.append(UnencryptedRange(offset=r.offset + offset_delta, length=new_len))
+        offset_delta += new_len - r.length
+        parts.append(expanded)
+        last = r.offset + r.length
+    parts.append(frame[last:])
+    return b"".join(parts), new_ranges
+
+
+def _contains_h26x_start_code(data: bytes) -> bool:
+    """
+    Check if H26x start code (3- or 4-byte) appears in data.
+
+    Args:
+        data (bytes): Buffer to scan.
+
+    Returns:
+        bool: True if 0x000001 or 0x00000001 is present.
+    """
+    i = 0
+    while i <= len(data) - 3:
+        if data[i : i + 3] == H26X_START_3:
+            return True
+        i += 1
+    return False
+
 
 def _build_supplemental_footer(
     tag_8: bytes,
     nonce_32: int,
     unencrypted_ranges: list[UnencryptedRange],
 ) -> bytes:
-    """Build supplemental blob: tag, ULEB128 nonce, ULEB128 offset/length pairs, then size byte and magic are appended by caller."""
+    """
+    Build supplemental body: tag, ULEB128 nonce, ULEB128 offset/length pairs.
+
+    Caller appends size byte and magic (0xFAFA).
+
+    Args:
+        tag_8 (bytes): 8-byte GCM tag.
+        nonce_32 (int): 32-bit nonce.
+        unencrypted_ranges (list[UnencryptedRange]): Ranges to encode.
+
+    Returns:
+        bytes: Supplemental body (without size byte and magic).
+    """
     parts = [tag_8]
     parts.append(uleb128_encode(nonce_32))
     for r in sorted(unencrypted_ranges, key=lambda x: x.offset):
@@ -37,10 +128,18 @@ def _build_supplemental_footer(
 def _parse_supplemental_from_tail(frame: bytes) -> tuple[ProtocolSupplementalData, int]:
     """
     Parse supplemental data from the end of a protocol frame.
-    Returns (parsed_data, start_offset_of_supplemental).
-    Frame ends with: ... [suppl_body][suppl_size_byte][0xFAFA].
-    suppl_size includes: tag + nonce + ranges + size_byte + magic (2).
-    So suppl_body length = suppl_size - 3 (size byte + magic 2).
+
+    Frame ends with: ... [suppl_body][suppl_size_byte][0xFAFA]. suppl_size includes
+    tag + nonce + ranges + size_byte + magic (2); suppl_body length = suppl_size - 3.
+
+    Args:
+        frame (bytes): Full protocol frame (ciphertext + supplemental).
+
+    Returns:
+        tuple[ProtocolSupplementalData, int]: (parsed supplemental, start offset of supplemental).
+
+    Raises:
+        DecryptionError: If frame too short, invalid magic, or malformed supplemental.
     """
     if len(frame) < MIN_SUPPLEMENTAL:
         raise DecryptionError("Frame too short for protocol supplemental data")
@@ -85,6 +184,7 @@ def _parse_supplemental_from_tail(frame: bytes) -> tuple[ProtocolSupplementalDat
 class FrameEncryptor:
     """
     Encrypts encoded media frames with codec-aware unencrypted ranges and DAVE footer.
+
     Uses a key ratchet and monotonic 32-bit nonce for the current sender.
     """
 
@@ -94,12 +194,26 @@ class FrameEncryptor:
         ratchet: KeyRatchet,
         nonce_supplier: Optional[Callable[[], int]] = None,
     ):
+        """
+        Initialize the frame encryptor.
+
+        Args:
+            sender_user_id (int): Sender user ID (e.g. Discord snowflake).
+            ratchet (KeyRatchet): Key ratchet for per-generation keys.
+            nonce_supplier (Optional[Callable[[], int]]): Optional nonce source for tests.
+        """
         self._sender_user_id = sender_user_id
         self._ratchet = ratchet
         self._nonce = 0
         self._nonce_supplier = nonce_supplier  # for tests
 
     def _next_nonce(self) -> int:
+        """
+        Return next 32-bit nonce (from supplier if set, else monotonic counter).
+
+        Returns:
+            int: Next nonce value.
+        """
         if self._nonce_supplier is not None:
             return self._nonce_supplier()
         n = self._nonce
@@ -110,28 +224,60 @@ class FrameEncryptor:
 
     def encrypt(self, encoded_frame: bytes, codec: str) -> bytes:
         """
-        Determine unencrypted ranges from codec, encrypt the frame, append DAVE supplemental footer.
+        Encrypt frame with codec-aware ranges and append DAVE supplemental footer.
+
+        For H264/H265, expands 3-byte start codes to 4-byte in unencrypted sections
+        and retries (up to 10 times) if a start code appears in ciphertext or supplemental.
+
+        Args:
+            encoded_frame (bytes): Raw encoded frame.
+            codec (str): Codec name (e.g. "VP8", "H264").
+
+        Returns:
+            bytes: Protocol frame (interleaved ciphertext + supplemental footer).
+
+        Raises:
+            DecryptionError: If supplemental too large or H26x retry limit exceeded.
         """
+        codec_upper = (codec or "").strip().upper()
         ranges = get_unencrypted_ranges(encoded_frame, codec)
-        nonce_32 = self._next_nonce()
-        # Generation = MSB of 32-bit nonce (top byte)
-        generation = (nonce_32 >> 24) & 0xFF
-        key = self._ratchet.get_key_for_generation(generation)
-        interleaved, tag_8 = encrypt_interleaved(key, nonce_32, encoded_frame, ranges)
-        footer_body = _build_supplemental_footer(tag_8, nonce_32, ranges)
-        suppl_size = len(footer_body) + 1 + 2  # + size byte + magic
-        if suppl_size > 255:
-            raise DecryptionError("Supplemental data too large")
-        return interleaved + footer_body + bytes([suppl_size]) + DAVE_MAGIC
+        frame = encoded_frame
+        if codec_upper in ("H264", "H.264", "H265", "H265/HEVC", "HEVC"):
+            frame, ranges = _apply_h26x_start_code_expansion(encoded_frame, ranges)
+        for _ in range(H26X_RETRY_MAX):
+            nonce_32 = self._next_nonce()
+            generation = (nonce_32 >> 24) & 0xFF
+            key = self._ratchet.get_key_for_generation(generation)
+            interleaved, tag_8 = encrypt_interleaved(key, nonce_32, frame, ranges)
+            footer_body = _build_supplemental_footer(tag_8, nonce_32, ranges)
+            if codec_upper in ("H264", "H.264", "H265", "H265/HEVC", "HEVC"):
+                if _contains_h26x_start_code(interleaved) or _contains_h26x_start_code(footer_body):
+                    continue
+            suppl_size = len(footer_body) + 1 + 2
+            if suppl_size > 255:
+                raise DecryptionError("Supplemental data too large")
+            return interleaved + footer_body + bytes([suppl_size]) + DAVE_MAGIC
+        raise DecryptionError(
+            "H26X start code in ciphertext or supplemental after max retries; frame dropped"
+        )
 
 
 class FrameDecryptor:
     """
-    Decrypts DAVE protocol frames: parses footer, looks up key by generation, verifies and decrypts.
+    Decrypts DAVE protocol frames.
+
+    Parses footer, looks up key by generation, verifies and decrypts.
     Tracks used (sender_id, nonce) to reject reuse.
     """
 
     def __init__(self, sender_user_id: int, ratchet: KeyRatchet):
+        """
+        Initialize the frame decryptor.
+
+        Args:
+            sender_user_id (int): Sender user ID (for nonce reuse tracking).
+            ratchet (KeyRatchet): Key ratchet for this sender.
+        """
         self._sender_user_id = sender_user_id
         self._ratchet = ratchet
         self._used_nonces: set[tuple[int, int]] = set()
@@ -139,7 +285,15 @@ class FrameDecryptor:
     def decrypt(self, protocol_frame: bytes) -> bytes:
         """
         Parse footer, get key for generation (from nonce MSB), verify tag, decrypt.
-        Raises DecryptionError on reuse or verification failure.
+
+        Args:
+            protocol_frame (bytes): Full DAVE protocol frame (ciphertext + footer).
+
+        Returns:
+            bytes: Decrypted encoded frame.
+
+        Raises:
+            DecryptionError: On nonce reuse or GCM verification failure.
         """
         suppl, interleaved_end = _parse_supplemental_from_tail(protocol_frame)
         interleaved = protocol_frame[:interleaved_end]
@@ -160,8 +314,15 @@ class FrameDecryptor:
 
 def protocol_frame_check(frame: bytes) -> bool:
     """
-    Return True if frame passes minimal protocol frame check (magic, size, structure).
+    Check if frame passes minimal DAVE protocol structure (magic, size).
+
     Used by passthrough logic to detect DAVE frames.
+
+    Args:
+        frame (bytes): Potential protocol frame.
+
+    Returns:
+        bool: True if magic and supplemental size look valid.
     """
     if len(frame) < MIN_SUPPLEMENTAL:
         return False

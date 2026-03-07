@@ -6,7 +6,11 @@ All protocol-specific errors inherit from DaveProtocolError for easy catching.
 
 
 class DaveProtocolError(Exception):
-    """Base exception for all DAVE protocol errors."""
+    """
+    Base exception for all DAVE protocol errors.
+
+    Catch this to handle any protocol-level failure.
+    """
 
     pass
 
@@ -14,6 +18,7 @@ class DaveProtocolError(Exception):
 class DecryptionError(DaveProtocolError):
     """
     Raised on decryption failure: GCM tag mismatch, nonce reuse, or key mismatch.
+
     Fail-closed: drop the frame and do not process.
     """
 
@@ -23,7 +28,8 @@ class DecryptionError(DaveProtocolError):
 class InvalidCommitError(DaveProtocolError):
     """
     Raised when a commit or welcome message cannot be processed.
-    Triggers state reset and application should send opcode 31 and submit new KeyPackage (26).
+
+    Triggers state reset; application should send opcode 31 and submit new KeyPackage (26).
     """
 
     pass

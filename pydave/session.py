@@ -15,10 +15,18 @@ from pydave.mls.opcodes import ExternalSenderPackage
 class DaveSession:
     """
     High-level facade for managing a DAVE media session.
+
     Holds MLS group state, per-sender ratchets, and provides frame encrypt/decrypt.
     """
 
     def __init__(self, local_user_id: int, protocol_version: int = 1):
+        """
+        Initialize a DAVE session for the local user.
+
+        Args:
+            local_user_id (int): Local user identifier (e.g. Discord snowflake).
+            protocol_version (int): DAVE protocol version. Defaults to 1.
+        """
         self._local_user_id = local_user_id
         self._protocol_version = protocol_version
         self._group: Optional[Any] = None
@@ -37,7 +45,12 @@ class DaveSession:
         self._group_id = b"dave-default-group"
 
     def handle_external_sender_package(self, package_bytes: bytes) -> None:
-        """Process opcode 25: store external sender; create local group if we have key package."""
+        """
+        Process opcode 25: store external sender; create local group if key package is ready.
+
+        Args:
+            package_bytes (bytes): Serialized external sender package (opcode 25 payload).
+        """
         from pydave.mls.group_state import create_group
         from pydave.mls.opcodes import parse_external_sender_package
 
@@ -48,8 +61,13 @@ class DaveSession:
 
     def prepare_epoch(self, epoch_id: int) -> Optional[bytes]:
         """
-        Prepare for new epoch (e.g. after select_protocol_ack or prepare_epoch with epoch=1).
-        If epoch_id == 1, create new key package and return opcode 26 payload; else None.
+        Prepare for new epoch (e.g. after select_protocol_ack or prepare_epoch).
+
+        Args:
+            epoch_id (int): Epoch identifier. Only epoch_id == 1 triggers key package creation.
+
+        Returns:
+            Optional[bytes]: Opcode 26 (key package) payload if epoch_id == 1, else None.
         """
         if epoch_id != 1:
             return None
@@ -66,8 +84,13 @@ class DaveSession:
 
     def handle_proposals(self, proposal_bytes: bytes) -> Optional[bytes]:
         """
-        Process opcode 27. If we have a group and pending proposals require a commit,
-        create commit (and optional welcome) and return opcode 28 payload; else None.
+        Process opcode 27 (proposals). Creates commit and optional welcome when applicable.
+
+        Args:
+            proposal_bytes (bytes): Serialized proposals message (opcode 27 payload).
+
+        Returns:
+            Optional[bytes]: Opcode 28 (commit/welcome) payload if commit was created, else None.
         """
         if self._group is None:
             return None
@@ -100,7 +123,16 @@ class DaveSession:
             return None
 
     def handle_commit(self, transition_id: int, commit_bytes: bytes) -> None:
-        """Process opcode 29: apply commit to group, refresh receive ratchets."""
+        """
+        Process opcode 29: apply commit to group and refresh receive ratchets.
+
+        Args:
+            transition_id (int): Transition identifier from the announce.
+            commit_bytes (bytes): Serialized MLS commit message.
+
+        Raises:
+            InvalidCommitError: If no group exists or commit application fails.
+        """
         from pydave.exceptions import InvalidCommitError
         from pydave.mls.group_state import apply_commit
 
@@ -114,7 +146,16 @@ class DaveSession:
         self._refresh_receive_ratchets()
 
     def handle_welcome(self, transition_id: int, welcome_bytes: bytes) -> None:
-        """Process opcode 30: join group from welcome (we were added)."""
+        """
+        Process opcode 30: join group from welcome (we were added).
+
+        Args:
+            transition_id (int): Transition identifier from the welcome message.
+            welcome_bytes (bytes): Serialized MLS Welcome message.
+
+        Raises:
+            ValueError: If no HPKE private key is available to process the welcome.
+        """
         from pydave.mls.group_state import join_from_welcome
 
         if self._hpke_private_key is None:
@@ -128,12 +169,49 @@ class DaveSession:
         self._refresh_send_ratchet()
 
     def execute_transition(self, transition_id: int) -> None:
-        """Process opcode 22: rotate key ratchets to new epoch."""
+        """
+        Process opcode 22: rotate key ratchets to new epoch.
+
+        Args:
+            transition_id (int): Transition identifier from execute transition payload.
+        """
         self._refresh_send_ratchet()
         self._refresh_receive_ratchets()
 
+    def leave_group(self) -> Optional[bytes]:
+        """
+        Tear down local MLS group state and optionally return a Remove proposal for self.
+
+        Clears group, send/receive ratchets, and member state.
+
+        Returns:
+            Optional[bytes]: Serialized Remove proposal bytes to send (e.g. via opcode 27)
+                if session had a group and signing key; otherwise None.
+        """
+        remove_proposal_bytes: Optional[bytes] = None
+        if self._group is not None and self._signing_key_der is not None:
+            try:
+                from pydave.mls.group_state import create_remove_proposal_for_self
+
+                remove_proposal_bytes = create_remove_proposal_for_self(
+                    self._group, self._signing_key_der
+                )
+            except Exception:
+                pass
+        self._group = None
+        self._send_ratchet = None
+        self._receive_ratchets = {}
+        self._member_leaf_indices = {}
+        self._current_epoch = 0
+        self._key_package_bytes = None
+        return remove_proposal_bytes
+
     def _refresh_send_ratchet(self) -> None:
-        """Update send ratchet from current group exporter."""
+        """
+        Update send ratchet from current group exporter.
+
+        No-op if no group is established.
+        """
         if self._group is None:
             return
         from pydave.mls.group_state import export_sender_base_secret
@@ -142,11 +220,16 @@ class DaveSession:
         self._send_ratchet = KeyRatchet(base, retention_seconds=self._retention_seconds)
 
     def _refresh_receive_ratchets(self) -> None:
-        """Refresh receive ratchets for all current senders (by leaf index / user id)."""
+        """
+        Refresh receive ratchets for all current senders.
+
+        Replaces the ratchet dict so removed members are dropped. No-op if no group.
+        """
         if self._group is None:
             return
         from pydave.mls.group_state import export_sender_base_secret
 
+        new_ratchets: dict[int, KeyRatchet] = {}
         n = self._group._inner.get_member_count()
         for leaf_index in range(n):
             if leaf_index == self._group._inner._own_leaf_index:
@@ -155,9 +238,10 @@ class DaveSession:
             if user_id is None:
                 user_id = leaf_index
             base = export_sender_base_secret(self._group, user_id)
-            self._receive_ratchets[user_id] = KeyRatchet(
+            new_ratchets[user_id] = KeyRatchet(
                 base, retention_seconds=self._retention_seconds
             )
+        self._receive_ratchets = new_ratchets
 
     def _leaf_index_to_user_id(self, leaf_index: int) -> Optional[int]:
         """Resolve leaf index to user ID from tree credential (if available)."""
@@ -174,7 +258,15 @@ class DaveSession:
         return None
 
     def get_encryptor(self) -> FrameEncryptor:
-        """Return encryptor for local user's outgoing frames."""
+        """
+        Return encryptor for local user's outgoing frames.
+
+        Returns:
+            FrameEncryptor: Encryptor for the current send ratchet.
+
+        Raises:
+            RuntimeError: If no send ratchet (group not established).
+        """
         if self._send_ratchet is None:
             self._refresh_send_ratchet()
         if self._send_ratchet is None:
@@ -182,7 +274,18 @@ class DaveSession:
         return FrameEncryptor(self._local_user_id, self._send_ratchet)
 
     def get_decryptor(self, sender_id: int) -> FrameDecryptor:
-        """Return decryptor for a specific remote sender."""
+        """
+        Return decryptor for a specific remote sender.
+
+        Args:
+            sender_id (int): Remote sender user ID.
+
+        Returns:
+            FrameDecryptor: Decryptor for that sender's frames.
+
+        Raises:
+            KeyError: If no ratchet exists for the sender.
+        """
         if sender_id not in self._receive_ratchets:
             self._refresh_receive_ratchets()
         if sender_id not in self._receive_ratchets:
