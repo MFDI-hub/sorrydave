@@ -155,7 +155,9 @@ def _h265_unencrypted_ranges(frame: bytes) -> list[UnencryptedRange]:
         if nal_type >= 32:
             # Non-VCL
             ranges.append(
-                UnencryptedRange(offset=nal_start, length=min(H265_NAL_HEADER_LEN, next_start - nal_start))
+                UnencryptedRange(
+                    offset=nal_start, length=min(H265_NAL_HEADER_LEN, next_start - nal_start)
+                )
             )
         pos = next_start
     return ranges

@@ -17,8 +17,8 @@ from pydave.mls.opcodes import (
     build_invalid_commit_welcome,
     build_key_package_message,
     parse_announce_commit,
-    parse_external_sender_package,
     parse_execute_transition,
+    parse_external_sender_package,
     parse_proposals,
     parse_welcome_message,
 )

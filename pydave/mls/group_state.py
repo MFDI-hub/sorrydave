@@ -5,9 +5,13 @@ Creates group, key package, processes commit/welcome, exports sender base secret
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING
 
 from pydave.exceptions import InvalidCommitError
+
+if TYPE_CHECKING:
+    from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+    from rfc9420.mls.group import Group
 
 # DAVE protocol v1: MLS ciphersuite 2 (DHKEMP256_AES128GCM_SHA256_P256)
 DAVE_MLS_CIPHERSUITE_ID = 2
@@ -15,12 +19,12 @@ EXPORTER_LABEL = b"Discord Secure Frames v0"
 EXPORTER_LENGTH = 16
 
 
-def get_dave_crypto_provider() -> Any:
+def get_dave_crypto_provider() -> DefaultCryptoProvider:
     """
     Return rfc9420 DefaultCryptoProvider with DAVE MLS ciphersuite (2).
 
     Returns:
-        Any: DefaultCryptoProvider instance for DHKEMP256_AES128GCM_SHA256_P256.
+        DefaultCryptoProvider: Instance for DHKEMP256_AES128GCM_SHA256_P256.
     """
     from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
 
@@ -29,7 +33,7 @@ def get_dave_crypto_provider() -> Any:
 
 def create_key_package(
     user_id: int,
-    crypto: Optional[Any] = None,
+    crypto: DefaultCryptoProvider | None = None,
 ) -> tuple[bytes, bytes, bytes]:
     """
     Create a KeyPackage for the given user_id (64-bit e.g. Discord snowflake).
@@ -38,7 +42,7 @@ def create_key_package(
 
     Args:
         user_id (int): User identifier (64-bit).
-        crypto (Optional[Any]): Crypto provider; uses get_dave_crypto_provider() if None.
+        crypto (DefaultCryptoProvider | None): Crypto provider; uses get_dave_crypto_provider() if None.
 
     Returns:
         tuple[bytes, bytes, bytes]: (key_package_serialized, hpke_private_key, signing_key_der).
@@ -139,18 +143,18 @@ def create_key_package(
 def create_group(
     group_id: bytes,
     key_package_bytes: bytes,
-    crypto: Optional[Any] = None,
-) -> Any:
+    crypto: DefaultCryptoProvider | None = None,
+) -> Group:
     """
     Create a new MLS group with the given key package (single member).
 
     Args:
         group_id (bytes): Group identifier.
         key_package_bytes (bytes): Serialized KeyPackage of the initial member.
-        crypto (Optional[Any]): Crypto provider; uses get_dave_crypto_provider() if None.
+        crypto (DefaultCryptoProvider | None): Crypto provider; uses get_dave_crypto_provider() if None.
 
     Returns:
-        Any: rfc9420 Group instance.
+        Group: rfc9420 Group instance.
     """
     if crypto is None:
         crypto = get_dave_crypto_provider()
@@ -164,18 +168,18 @@ def create_group(
 def join_from_welcome(
     welcome_bytes: bytes,
     hpke_private_key: bytes,
-    crypto: Optional[Any] = None,
-) -> Any:
+    crypto: DefaultCryptoProvider | None = None,
+) -> Group:
     """
     Join group from Welcome message.
 
     Args:
         welcome_bytes (bytes): Serialized MLS Welcome message.
         hpke_private_key (bytes): HPKE private key from the KeyPackage used in the Add.
-        crypto (Optional[Any]): Crypto provider; uses get_dave_crypto_provider() if None.
+        crypto (DefaultCryptoProvider | None): Crypto provider; uses get_dave_crypto_provider() if None.
 
     Returns:
-        Any: rfc9420 Group instance.
+        Group: rfc9420 Group instance.
     """
     if crypto is None:
         crypto = get_dave_crypto_provider()
@@ -186,14 +190,14 @@ def join_from_welcome(
     return Group.join_from_welcome(welcome, hpke_private_key, crypto)
 
 
-def export_sender_base_secret(group: Any, sender_user_id: int) -> bytes:
+def export_sender_base_secret(group: Group, sender_user_id: int) -> bytes:
     """
     Export 16-byte sender base secret via MLS Exporter.
 
     Uses label "Discord Secure Frames v0" and context = little-endian 64-bit sender user ID.
 
     Args:
-        group (Any): rfc9420 Group instance.
+        group (Group): rfc9420 Group instance.
         sender_user_id (int): Sender user ID (64-bit).
 
     Returns:
@@ -204,12 +208,12 @@ def export_sender_base_secret(group: Any, sender_user_id: int) -> bytes:
     return result
 
 
-def apply_commit(group: Any, commit_mls_plaintext_bytes: bytes, sender_leaf_index: int) -> None:
+def apply_commit(group: Group, commit_mls_plaintext_bytes: bytes, sender_leaf_index: int) -> None:
     """
     Apply a received commit to the group.
 
     Args:
-        group (Any): rfc9420 Group instance.
+        group (Group): rfc9420 Group instance.
         commit_mls_plaintext_bytes (bytes): Serialized MLS Plaintext commit message.
         sender_leaf_index (int): Leaf index of the commit sender.
 
@@ -228,7 +232,7 @@ def apply_commit(group: Any, commit_mls_plaintext_bytes: bytes, sender_leaf_inde
 
 
 def process_proposal(
-    group: Any,
+    group: Group,
     proposal_mls_plaintext_bytes: bytes,
     sender_leaf_index: int,
     sender_type: int = 1,
@@ -237,7 +241,7 @@ def process_proposal(
     Process a proposal (e.g. Add/Remove from external sender).
 
     Args:
-        group (Any): rfc9420 Group instance.
+        group (Group): rfc9420 Group instance.
         proposal_mls_plaintext_bytes (bytes): Serialized MLS Plaintext proposal.
         sender_leaf_index (int): Leaf index of the sender.
         sender_type (int): 1 = MEMBER, 2 = EXTERNAL. Defaults to 1.
@@ -250,12 +254,12 @@ def process_proposal(
     group._inner.process_proposal(msg, Sender(sender_leaf_index, st))
 
 
-def create_commit_and_welcome(group: Any, signing_key_der: bytes) -> tuple[bytes, list[bytes]]:
+def create_commit_and_welcome(group: Group, signing_key_der: bytes) -> tuple[bytes, list[bytes]]:
     """
     Create commit and optional welcome messages.
 
     Args:
-        group (Any): rfc9420 Group instance with pending proposals.
+        group (Group): rfc9420 Group instance with pending proposals.
         signing_key_der (bytes): Signing private key (DER) for the committing member.
 
     Returns:
@@ -268,12 +272,12 @@ def create_commit_and_welcome(group: Any, signing_key_der: bytes) -> tuple[bytes
     return (commit_bytes, welcome_list)
 
 
-def create_remove_proposal_for_self(group: Any, signing_key_der: bytes) -> bytes:
+def create_remove_proposal_for_self(group: Group, signing_key_der: bytes) -> bytes:
     """
     Create an MLS Remove proposal for the local member (self-remove).
 
     Args:
-        group (Any): rfc9420 Group instance.
+        group (Group): rfc9420 Group instance.
         signing_key_der (bytes): Signing private key (DER) for the member.
 
     Returns:
@@ -285,19 +289,19 @@ def create_remove_proposal_for_self(group: Any, signing_key_der: bytes) -> bytes
 
 
 def create_update_proposal(
-    group: Any,
+    group: Group,
     signing_key_der: bytes,
     user_id: int,
-    crypto: Optional[Any] = None,
+    crypto: DefaultCryptoProvider | None = None,
 ) -> bytes:
     """
     Create an MLS Update proposal to refresh the local member's leaf node keys.
 
     Args:
-        group (Any): rfc9420 Group instance.
+        group (Group): rfc9420 Group instance.
         signing_key_der (bytes): Signing private key (DER) for the member.
         user_id (int): User ID for credential (64-bit).
-        crypto (Optional[Any]): Crypto provider; uses get_dave_crypto_provider() if None.
+        crypto (DefaultCryptoProvider | None): Crypto provider; uses get_dave_crypto_provider() if None.
 
     Returns:
         bytes: Serialized MLS Plaintext proposal to send (e.g. via opcode 27).
@@ -309,7 +313,6 @@ def create_update_proposal(
         crypto = get_dave_crypto_provider()
     from rfc9420.crypto.ciphersuites import get_ciphersuite_by_id
     from rfc9420.protocol.data_structures import (
-        CipherSuite,
         Credential,
         CredentialType,
         Signature,
@@ -319,7 +322,6 @@ def create_update_proposal(
     cs = get_ciphersuite_by_id(DAVE_MLS_CIPHERSUITE_ID)
     if cs is None:
         raise ValueError(f"Unknown MLS ciphersuite id {DAVE_MLS_CIPHERSUITE_ID}")
-    cipher_suite = CipherSuite(cs.kem, cs.kdf, cs.aead, suite_id=cs.suite_id)
     hpke_private, hpke_public = crypto.generate_key_pair()
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec

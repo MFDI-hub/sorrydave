@@ -66,7 +66,9 @@ class KeyRatchet:
         """
         now = time.monotonic()
         self._evict_expired(now)
-        cap = (self._max_generation_seen if self._max_generation_seen is not None else 0) + self._max_forward_gap
+        cap = (
+            self._max_generation_seen if self._max_generation_seen is not None else 0
+        ) + self._max_forward_gap
         if generation > cap:
             raise ValueError(
                 f"Generation {generation} exceeds max forward gap (cap {cap}); "
