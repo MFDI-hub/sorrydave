@@ -28,7 +28,7 @@ jobs:
             - name: Install uv
               run: pipx install uv
             - name: Install dependencies
-              run: uv sync --group docs
+              run: uv sync --extra docs
             - name: Build docs
               run: uv run mkdocs build --strict
             - name: Upload GitHub Pages artifact
