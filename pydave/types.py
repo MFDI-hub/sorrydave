@@ -3,7 +3,7 @@ DAVE protocol data structures and configuration types.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Union
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,8 +65,8 @@ class IdentityConfig:
 
     Attributes:
         is_persistent (bool): Whether to persist keys. Defaults to False.
-        storage_path (Optional[str]): Path for persistent storage. None if ephemeral.
+        storage_path (Union[str, None]): Path for persistent storage. None if ephemeral.
     """
 
     is_persistent: bool = False
-    storage_path: Optional[str] = None
+    storage_path: Union[str, None] = None

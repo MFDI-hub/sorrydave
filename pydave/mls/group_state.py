@@ -5,7 +5,7 @@ Creates group, key package, processes commit/welcome, exports sender base secret
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Union
 
 from pydave.exceptions import InvalidCommitError
 
@@ -33,7 +33,7 @@ def get_dave_crypto_provider() -> DefaultCryptoProvider:
 
 def create_key_package(
     user_id: int,
-    crypto: Optional[DefaultCryptoProvider] = None,
+    crypto: Union[DefaultCryptoProvider, None] = None,
 ) -> tuple[bytes, bytes, bytes]:
     """
     Create a KeyPackage for the given user_id (64-bit e.g. Discord snowflake).
@@ -42,7 +42,7 @@ def create_key_package(
 
     Args:
         user_id (int): User identifier (64-bit).
-        crypto (Optional[DefaultCryptoProvider]): Crypto provider; uses get_dave_crypto_provider() if None.
+        crypto (Union[DefaultCryptoProvider, None]): Crypto provider; uses get_dave_crypto_provider() if None.
 
     Returns:
         tuple[bytes, bytes, bytes]: (key_package_serialized, hpke_private_key, signing_key_der).
@@ -143,7 +143,7 @@ def create_key_package(
 def create_group(
     group_id: bytes,
     key_package_bytes: bytes,
-    crypto: Optional[DefaultCryptoProvider] = None,
+    crypto: Union[DefaultCryptoProvider, None] = None,
 ) -> Group:
     """
     Create a new MLS group with the given key package (single member).
@@ -151,7 +151,7 @@ def create_group(
     Args:
         group_id (bytes): Group identifier.
         key_package_bytes (bytes): Serialized KeyPackage of the initial member.
-        crypto (Optional[DefaultCryptoProvider]): Crypto provider; uses get_dave_crypto_provider() if None.
+        crypto (Union[DefaultCryptoProvider, None]): Crypto provider; uses get_dave_crypto_provider() if None.
 
     Returns:
         Group: rfc9420 Group instance.
@@ -168,7 +168,7 @@ def create_group(
 def join_from_welcome(
     welcome_bytes: bytes,
     hpke_private_key: bytes,
-    crypto: Optional[DefaultCryptoProvider] = None,
+    crypto: Union[DefaultCryptoProvider, None] = None,
 ) -> Group:
     """
     Join group from Welcome message.
@@ -176,7 +176,7 @@ def join_from_welcome(
     Args:
         welcome_bytes (bytes): Serialized MLS Welcome message.
         hpke_private_key (bytes): HPKE private key from the KeyPackage used in the Add.
-        crypto (Optional[DefaultCryptoProvider]): Crypto provider; uses get_dave_crypto_provider() if None.
+        crypto (Union[DefaultCryptoProvider, None]): Crypto provider; uses get_dave_crypto_provider() if None.
 
     Returns:
         Group: rfc9420 Group instance.
@@ -292,7 +292,7 @@ def create_update_proposal(
     group: Group,
     signing_key_der: bytes,
     user_id: int,
-    crypto: Optional[DefaultCryptoProvider] = None,
+    crypto: Union[DefaultCryptoProvider, None] = None,
 ) -> bytes:
     """
     Create an MLS Update proposal to refresh the local member's leaf node keys.
@@ -301,7 +301,7 @@ def create_update_proposal(
         group (Group): rfc9420 Group instance.
         signing_key_der (bytes): Signing private key (DER) for the member.
         user_id (int): User ID for credential (64-bit).
-        crypto (Optional[DefaultCryptoProvider]): Crypto provider; uses get_dave_crypto_provider() if None.
+        crypto (Union[DefaultCryptoProvider, None]): Crypto provider; uses get_dave_crypto_provider() if None.
 
     Returns:
         bytes: Serialized MLS Plaintext proposal to send (e.g. via opcode 27).

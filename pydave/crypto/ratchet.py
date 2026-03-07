@@ -3,7 +3,7 @@ Per-sender key ratchet derived from MLS-Exporter base secret.
 """
 
 import time
-from typing import Callable, Optional
+from typing import Callable, Union
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
@@ -46,7 +46,7 @@ class KeyRatchet:
         self._retention_seconds = retention_seconds
         self._max_forward_gap = max_forward_gap
         self._cache: dict[int, tuple[bytes, float]] = {}
-        self._max_generation_seen: Optional[int] = None
+        self._max_generation_seen: Union[int, None] = None
 
     def get_key_for_generation(self, generation: int) -> bytes:
         """

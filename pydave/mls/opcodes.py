@@ -6,7 +6,7 @@ Binary opcodes 25-30; JSON opcodes 22, 31. No I/O; consumes/produces bytes only.
 import json
 import struct
 from dataclasses import dataclass
-from typing import Optional
+from typing import Union
 
 # Opcode values per protocol.md
 OPCODE_EXECUTE_TRANSITION = 22
@@ -145,14 +145,14 @@ class ProposalsMessage:
     Attributes:
         sequence_number (int): Message sequence number.
         operation_type (int): 0 = append, 1 = revoke.
-        proposal_messages (Optional[list[bytes]]): Serialized proposals (append only).
-        proposal_refs (Optional[list[bytes]]): Proposal refs (revoke only).
+        proposal_messages (Union[list[bytes], None]): Serialized proposals (append only).
+        proposal_refs (Union[list[bytes], None]): Proposal refs (revoke only).
     """
 
     sequence_number: int
     operation_type: int  # 0 = append, 1 = revoke
-    proposal_messages: Optional[list[bytes]] = None
-    proposal_refs: Optional[list[bytes]] = None
+    proposal_messages: Union[list[bytes], None] = None
+    proposal_refs: Union[list[bytes], None] = None
 
 
 def parse_proposals(data: bytes) -> ProposalsMessage:
@@ -242,13 +242,13 @@ def parse_welcome_message(data: bytes) -> tuple[int, bytes]:
     return transition_id, welcome_bytes
 
 
-def build_commit_welcome(commit_message: bytes, welcome_message: Optional[bytes]) -> bytes:
+def build_commit_welcome(commit_message: bytes, welcome_message: Union[bytes, None]) -> bytes:
     """
     Build opcode 28 payload: opcode || commit || optional welcome.
 
     Args:
         commit_message (bytes): Serialized MLS commit message.
-        welcome_message (Optional[bytes]): Optional serialized Welcome (not wrapped in MLSMessage).
+        welcome_message (Union[bytes, None]): Optional serialized Welcome (not wrapped in MLSMessage).
 
     Returns:
         bytes: Opcode 28 message bytes.
@@ -311,7 +311,7 @@ def parse_execute_transition(payload: bytes) -> int:
     try:
         tid = int(tid)
     except (TypeError, ValueError):
-        raise ValueError("d.transition_id must be an integer")
+        raise ValueError("d.transition_id must be an integer") from None
     if not 0 <= tid <= 0xFFFF:
         raise ValueError("transition_id must be uint16")
     return tid

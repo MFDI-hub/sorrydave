@@ -2,7 +2,7 @@
 Frame encryptor and decryptor: codec-aware transform with DAVE protocol footer.
 """
 
-from typing import Callable, Optional
+from typing import Callable, Union
 
 from pydave.crypto.cipher import (
     DAVE_MAGIC,
@@ -192,7 +192,7 @@ class FrameEncryptor:
         self,
         sender_user_id: int,
         ratchet: KeyRatchet,
-        nonce_supplier: Optional[Callable[[], int]] = None,
+        nonce_supplier: Union[Callable[[], int], None] = None,
     ):
         """
         Initialize the frame encryptor.
@@ -200,7 +200,7 @@ class FrameEncryptor:
         Args:
             sender_user_id (int): Sender user ID (e.g. Discord snowflake).
             ratchet (KeyRatchet): Key ratchet for per-generation keys.
-            nonce_supplier (Optional[Callable[[], int]]): Optional nonce source for tests.
+            nonce_supplier (Union[Callable[[], int], None]): Optional nonce source for tests.
         """
         self._sender_user_id = sender_user_id
         self._ratchet = ratchet
