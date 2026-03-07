@@ -5,7 +5,7 @@ Minimal lifecycle for a DAVE media session.
 ## 1. Create a session
 
 ```python
-from pydave import DaveSession
+from sorrydave import DaveSession
 
 session = DaveSession(local_user_id=123456789)
 ```
@@ -53,7 +53,7 @@ session.handle_welcome(transition_id, welcome_bytes)
 Parse the payload to get `transition_id`, then execute the transition:
 
 ```python
-from pydave.mls import parse_execute_transition
+from sorrydave.mls import parse_execute_transition
 
 transition_id = parse_execute_transition(payload)[0]
 session.execute_transition(transition_id)
@@ -80,8 +80,8 @@ On `InvalidCommitError`:
 2. Call `session.prepare_epoch(1)` and send the returned key package as opcode 26.
 
 ```python
-from pydave import InvalidCommitError
-from pydave.mls import build_invalid_commit_welcome
+from sorrydave import InvalidCommitError
+from sorrydave.mls import build_invalid_commit_welcome
 
 try:
     session.handle_commit(transition_id, commit_bytes)

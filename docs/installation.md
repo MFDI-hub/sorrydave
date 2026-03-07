@@ -3,7 +3,7 @@
 ## Requirements
 
 - Python **3.9+**
-- Dependencies: `rfc9420`, `cryptography`, `pycryptodome` (installed automatically with PyDAVE)
+- Dependencies: `rfc9420`, `cryptography`, `pycryptodome` (installed automatically with sorrydave)
 
 ## Install the package
 

@@ -1,13 +1,13 @@
 import pytest
-from pydave.crypto.cipher import (
+from sorrydave.crypto.cipher import (
     uleb128_encode,
     uleb128_decode,
     expand_nonce_96,
     encrypt_interleaved,
     decrypt_interleaved,
 )
-from pydave.types import UnencryptedRange
-from pydave.exceptions import DecryptionError
+from sorrydave.types import UnencryptedRange
+from sorrydave.exceptions import DecryptionError
 
 
 def test_expand_nonce():

@@ -1,8 +1,8 @@
 """Tests for MLS group state (create_key_package, create_group, commit, export, etc.)."""
 
 import pytest
-from pydave.exceptions import InvalidCommitError
-from pydave.mls.group_state import (
+from sorrydave.exceptions import InvalidCommitError
+from sorrydave.mls.group_state import (
     apply_commit,
     create_commit_and_welcome,
     create_group,

@@ -2,5 +2,5 @@
 
 Pairwise fingerprint and displayable codes for verification.
 
-::: pydave.identity.generate_fingerprint
-::: pydave.identity.displayable_code
+::: sorrydave.identity.generate_fingerprint
+::: sorrydave.identity.displayable_code

@@ -3,9 +3,9 @@
 import struct
 
 import pytest
-from pydave.exceptions import InvalidCommitError
-from pydave.mls.opcodes import build_invalid_commit_welcome
-from pydave.session import DaveSession
+from sorrydave.exceptions import InvalidCommitError
+from sorrydave.mls.opcodes import build_invalid_commit_welcome
+from sorrydave.session import DaveSession
 
 
 def _varint(n: int) -> bytes:

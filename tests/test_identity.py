@@ -1,5 +1,5 @@
 import pytest
-from pydave.identity import displayable_code, generate_fingerprint, epoch_authenticator_display
+from sorrydave.identity import displayable_code, generate_fingerprint, epoch_authenticator_display
 
 
 def test_displayable_code():

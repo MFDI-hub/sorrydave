@@ -1,6 +1,6 @@
 import pytest
-from pydave.media.codecs import get_unencrypted_ranges
-from pydave.types import UnencryptedRange
+from sorrydave.media.codecs import get_unencrypted_ranges
+from sorrydave.types import UnencryptedRange
 
 
 def test_opus_full_encrypt():

@@ -1,4 +1,4 @@
-site_name: PyDAVE
+site_name: sorrydave
 site_description: DAVE (Discord Audio/Video End-to-End Encryption) protocol library — pure data and state layer on rfc9420
 site_url: https://github.com/mfdi/PyDAVE
 repo_url: https://github.com/mfdi/PyDAVE

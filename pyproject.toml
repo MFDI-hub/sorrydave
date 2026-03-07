@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pydave"
+name = "sorrydave"
 version = "0.1.0"
 description = "DAVE (Discord Audio/Video End-to-End Encryption) protocol library — pure data and state layer on rfc9420"
 readme = "README.md"
@@ -37,9 +37,13 @@ dev = ["pytest>=7", "pytest-cov", "ruff>=0.8", "mypy>=1.0"]
 # mkdocs 2.x is incompatible with mkdocs-material; pin to 1.x
 docs = ["mkdocs~=1.6", "mkdocs-material>=9.5", "mkdocstrings[python]>=0.24", "pymdown-extensions"]
 
+# uv: install with uv sync --all-groups (needed for scripts/publish.py)
+[dependency-groups]
+publish = ["python-dotenv>=1.0"]
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pydave*"]
+include = ["sorrydave*"]
 
 # Versions to run checks for (scripts/run_checks.py --all-python and CI)
 [tool.run_checks]
@@ -48,7 +52,7 @@ python-versions = ["3.9", "3.10", "3.11", "3.12"]
 [tool.ruff]
 target-version = "py39"
 line-length = 100
-src = ["pydave"]
+src = ["sorrydave"]
 
 [tool.ruff.lint]
 select = [
