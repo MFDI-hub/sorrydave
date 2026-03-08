@@ -12,14 +12,15 @@ Skips if voice_payloads/ is missing or contains no .bin files.
 from pathlib import Path
 
 import pytest
-
 from sorrydave.mls.opcodes import (
     OPCODE_ANNOUNCE_COMMIT,
+    OPCODE_COMMIT_WELCOME,
     OPCODE_EXTERNAL_SENDER_PACKAGE,
     OPCODE_KEY_PACKAGE,
     OPCODE_PROPOSALS,
     OPCODE_WELCOME,
     parse_announce_commit,
+    parse_commit_welcome,
     parse_external_sender_package,
     parse_proposals,
     parse_welcome_message,
@@ -52,11 +53,12 @@ _BIN_PAYLOADS = list(_collect_bin_payloads())
 
 
 def _opcode_supported_for_parse(opcode: int) -> bool:
-    """Binary DAVE opcodes we can parse from .bin (25, 26, 27, 29, 30)."""
+    """Binary DAVE opcodes we can parse from .bin (25, 26, 27, 28, 29, 30)."""
     return opcode in (
         OPCODE_EXTERNAL_SENDER_PACKAGE,  # 25
         OPCODE_KEY_PACKAGE,              # 26
         OPCODE_PROPOSALS,                # 27
+        OPCODE_COMMIT_WELCOME,           # 28
         OPCODE_ANNOUNCE_COMMIT,          # 29
         OPCODE_WELCOME,                  # 30
     )
@@ -102,6 +104,13 @@ def test_voice_payload_bin_parses(path: Path, opcode: int):
         else:
             assert msg.proposal_refs is not None
         return
+    if opcode == OPCODE_COMMIT_WELCOME:
+        commit_bytes, welcome_bytes = parse_commit_welcome(data)
+        assert isinstance(commit_bytes, bytes)
+        assert len(commit_bytes) > 0
+        if welcome_bytes is not None:
+            assert isinstance(welcome_bytes, bytes)
+        return
     if opcode == OPCODE_ANNOUNCE_COMMIT:
         transition_id, commit_bytes = parse_announce_commit(data)
         assert 0 <= transition_id <= 0xFFFF
@@ -119,8 +128,8 @@ def test_voice_payload_bin_parses(path: Path, opcode: int):
     reason="No .bin files in voice_payloads/",
 )
 def test_voice_payloads_bin_at_least_one_dave_opcode():
-    """Sanity: at least one .bin file is a DAVE binary opcode (25, 26, 27, 29, 30)."""
-    dave_opcodes = {25, 26, 27, 29, 30}
+    """Sanity: at least one .bin file is a DAVE binary opcode (25, 26, 27, 28, 29, 30)."""
+    dave_opcodes = {25, 26, 27, 28, 29, 30}
     found = {op for _, op in _BIN_PAYLOADS if op in dave_opcodes}
     assert len(found) > 0, (
         "No DAVE binary opcodes (25–30) found in .bin filenames. "

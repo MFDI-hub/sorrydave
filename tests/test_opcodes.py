@@ -5,12 +5,14 @@ import struct
 
 import pytest
 from sorrydave.mls.opcodes import (
+    OPCODE_COMMIT_WELCOME,
     OPCODE_INVALID_COMMIT_WELCOME,
     OPCODE_KEY_PACKAGE,
     build_commit_welcome,
     build_invalid_commit_welcome,
     build_key_package_message,
     parse_announce_commit,
+    parse_commit_welcome,
     parse_execute_transition,
     parse_external_sender_package,
     parse_proposals,
@@ -190,9 +192,10 @@ def test_build_commit_welcome_commit_only():
     """build_commit_welcome with welcome_message None produces opcode 28 and commit only."""
     commit = b"commit_bytes"
     out = build_commit_welcome(commit, None)
-    assert out[0] == 28
-    # Rest is varint(len(commit)) + commit
-    assert commit in out
+    assert out[0] == OPCODE_COMMIT_WELCOME
+    parsed_commit, parsed_welcome = parse_commit_welcome(out)
+    assert parsed_commit == commit
+    assert parsed_welcome is None
 
 
 def test_build_commit_welcome_with_welcome():
@@ -200,9 +203,16 @@ def test_build_commit_welcome_with_welcome():
     commit = b"commit"
     welcome = b"welcome"
     out = build_commit_welcome(commit, welcome)
-    assert out[0] == 28
-    assert commit in out
-    assert welcome in out
+    assert out[0] == OPCODE_COMMIT_WELCOME
+    parsed_commit, parsed_welcome = parse_commit_welcome(out)
+    assert parsed_commit == commit
+    assert parsed_welcome == welcome
+
+
+def test_parse_commit_welcome_wrong_opcode():
+    """parse_commit_welcome raises when opcode is not 28."""
+    with pytest.raises(ValueError, match="Expected opcode 28"):
+        parse_commit_welcome(b"\x1d")
 
 
 # --- Opcode 29 (Announce Commit) ---

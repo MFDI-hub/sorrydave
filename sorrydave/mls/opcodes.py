@@ -277,7 +277,7 @@ def parse_welcome_message(data: bytes) -> tuple[int, bytes]:
 
 def build_commit_welcome(commit_message: bytes, welcome_message: Union[bytes, None]) -> bytes:
     """
-    Build opcode 28 payload: opcode || commit || optional welcome.
+    Build opcode 28 payload: opcode || opaque<V>(commit) || optional welcome.
 
     Args:
         commit_message (bytes): Serialized MLS commit message.
@@ -287,10 +287,34 @@ def build_commit_welcome(commit_message: bytes, welcome_message: Union[bytes, No
         bytes: Opcode 28 message bytes.
     """
     out = bytes([OPCODE_COMMIT_WELCOME])
-    out += commit_message
+    # Real gateway captures encode the commit as an opaque<V>-style field.
+    out += _write_opaque_varint(commit_message)
     if welcome_message:
         out += welcome_message  # Welcome is not wrapped in MLSMessage per DAVE struct
     return out
+
+
+def parse_commit_welcome(data: bytes) -> tuple[bytes, Union[bytes, None]]:
+    """
+    Parse opcode 28: commit message + optional welcome.
+
+    Args:
+        data (bytes): Full opcode 28 payload.
+
+    Returns:
+        tuple[bytes, Union[bytes, None]]: (commit_message, welcome_message_or_none).
+
+    Raises:
+        ValueError: If data too short, wrong opcode, or commit is truncated.
+    """
+    if len(data) < 1:
+        raise ValueError("Commit/welcome message too short")
+    opcode = data[0]
+    if opcode != OPCODE_COMMIT_WELCOME:
+        raise ValueError(f"Expected opcode 28, got {opcode}")
+    commit_message, off = _read_opaque_varint(data, 1)
+    welcome_message = data[off:] if off < len(data) else None
+    return commit_message, welcome_message
 
 
 def _write_opaque_varint(data: bytes) -> bytes:
