@@ -1,5 +1,8 @@
 """
 Per-sender key ratchet derived from MLS-Exporter base secret.
+
+Used by DaveSession for send ratchet (local user) and receive ratchets (remote senders).
+Each ratchet derives 128-bit AES keys per generation from the sender base secret.
 """
 
 import time
@@ -17,6 +20,7 @@ class KeyRatchet:
     """
     Derives 128-bit AES keys for each generation from a sender base secret.
 
+    Used by the session for send/receive keys (FrameEncryptor and FrameDecryptor).
     Caches recent keys for out-of-order decryption. Enforces a maximum forward
     gap from the highest generation seen (DoS mitigation).
     """
@@ -134,8 +138,9 @@ def sender_base_secret_from_exporter(export_fn: Callable[[], bytes]) -> bytes:
     """
     Obtain 16-byte sender base secret by calling the MLS exporter.
 
-    export_fn should invoke MLS-Exporter("Discord Secure Frames v0", context, 16)
-    with context = little-endian 64-bit sender user ID.
+    Used when building KeyRatchet for a sender (session refresh after commit/welcome/
+    execute transition). export_fn should invoke MLS-Exporter("Discord Secure Frames v0",
+    context, 16) with context = little-endian 64-bit sender user ID.
 
     Args:
         export_fn (Callable[[], bytes]): Callable that returns the exported secret.

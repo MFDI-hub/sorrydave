@@ -188,7 +188,10 @@ class FrameEncryptor:
     """
     Encrypts encoded media frames with codec-aware unencrypted ranges and DAVE footer.
 
-    Uses a key ratchet and monotonic 32-bit nonce for the current sender.
+    Uses a key ratchet and monotonic 32-bit nonce for the current sender. Frame layout:
+    interleaved plaintext ranges (codec headers) + ciphertext, then supplemental footer
+    (8-byte tag, ULEB128 nonce, ULEB128 offset/length pairs, 1-byte size, 2-byte magic 0xFAFA).
+    Supported codecs: OPUS, VP9, VP8, H264, H265, AV1 (case-insensitive).
     """
 
     def __init__(
@@ -282,8 +285,9 @@ class FrameDecryptor:
     """
     Decrypts DAVE protocol frames.
 
-    Parses footer, looks up key by generation, verifies and decrypts.
-    Tracks used (sender_id, nonce) to reject reuse.
+    Parses supplemental footer (tag, nonce, unencrypted ranges, size, magic 0xFAFA),
+    looks up key by generation from nonce, verifies GCM tag and decrypts. Tracks
+    used (sender_id, nonce) to reject nonce reuse. Supports same codecs as FrameEncryptor.
     """
 
     def __init__(self, sender_user_id: int, ratchet: KeyRatchet, passthrough: bool = False):
@@ -378,18 +382,20 @@ class FrameDecryptor:
 
 def protocol_frame_check(frame: bytes) -> bool:
     """
-    Check if frame passes full DAVE protocol structure per protocol.md.
+    Check if frame has the structure of a DAVE protocol frame (footer with magic 0xFAFA).
 
-    Validates: minimum size, magic 0xFAFA, supplemental size, ULEB128 nonce,
-    ULEB128 unencrypted ranges (ordered, distinct, non-overlapping, within bounds).
-
-    Used by passthrough logic to detect DAVE frames.
+    Validates: minimum size, ends with 2-byte magic 0xFAFA, supplemental size byte
+    in valid range, and that the supplemental body (tag, ULEB128 nonce, ULEB128
+    ranges) can be parsed. Returns True if the frame looks like a valid DAVE frame;
+    False otherwise. Used by passthrough logic to detect DAVE frames (e.g. skip
+    decryption for non-DAVE packets).
 
     Args:
-        frame (bytes): Potential protocol frame.
+        frame (bytes): Potential protocol frame (e.g. received media packet).
 
     Returns:
-        bool: True if frame passes all checks.
+        bool: True if frame passes structure checks; False if too short, wrong magic,
+        or supplemental invalid.
     """
     if len(frame) < MIN_SUPPLEMENTAL:
         return False

@@ -1,6 +1,24 @@
 """
 DAVE Voice Gateway opcode parsing and building (opcodes 0, 4, 11, 13, 21-24, 25-31).
+
 Binary opcodes 25-30; JSON opcodes 0, 4, 11, 13, 21, 22, 23, 24, 31. No I/O; consumes/produces bytes only.
+
+Public parse/build functions:
+    - build_identify: Build opcode 0 (Identify) JSON; client sends to server.
+    - parse_select_protocol_ack: Parse opcode 4 (Select Protocol Ack); returns protocol version.
+    - parse_clients_connect: Parse opcode 11 (Clients Connect); returns list of user_ids.
+    - parse_client_disconnect: Parse opcode 13 (Client Disconnect); returns user_id.
+    - parse_prepare_transition: Parse opcode 21 (Prepare Transition); returns (protocol_version, transition_id).
+    - parse_execute_transition: Parse opcode 22 (Execute Transition); returns transition_id.
+    - build_ready_for_transition: Build opcode 23 (Ready For Transition) JSON.
+    - parse_prepare_epoch: Parse opcode 24 (Prepare Epoch); returns (protocol_version, epoch).
+    - parse_external_sender_package: Parse opcode 25 (External Sender Package).
+    - build_key_package_message: Build opcode 26 (Key Package) payload.
+    - parse_proposals: Parse opcode 27 (Proposals).
+    - build_commit_welcome: Build opcode 28 (Commit/Welcome) payload.
+    - parse_announce_commit: Parse opcode 29 (Announce Commit); returns (transition_id, commit_bytes).
+    - parse_welcome_message: Parse opcode 30 (Welcome); returns (transition_id, welcome_bytes).
+    - build_invalid_commit_welcome: Build opcode 31 (Invalid Commit/Welcome) JSON.
 """
 
 import json
@@ -395,11 +413,13 @@ def build_identify(max_dave_protocol_version: int = 1, **d_extra: object) -> byt
     Build opcode 0 (Identify) JSON payload. Client sends to server.
 
     Args:
-        max_dave_protocol_version (int): Maximum supported DAVE protocol version.
+        max_dave_protocol_version (int): Maximum supported DAVE protocol version. Default 1.
         **d_extra: Additional keys for the "d" object (e.g. server_id, user_id, session_id).
 
     Returns:
-        bytes: UTF-8 JSON payload.
+        bytes: UTF-8 JSON payload, e.g. {"op":0,"d":{"max_dave_protocol_version":1,...}}.
+
+    When to call: At Voice Gateway connection start, before select_protocol_ack or prepare_epoch.
     """
     d = {"max_dave_protocol_version": max_dave_protocol_version, **d_extra}
     obj = {"op": OPCODE_IDENTIFY, "d": d}
@@ -410,8 +430,14 @@ def parse_select_protocol_ack(payload: bytes) -> int:
     """
     Parse opcode 4 (Select Protocol Ack) JSON payload. Server sends to client.
 
+    Args:
+        payload (bytes): UTF-8 JSON payload with "d.dave_protocol_version".
+
     Returns:
         int: dave_protocol_version (initial DAVE protocol version for the session).
+
+    Raises:
+        ValueError: If JSON invalid, missing "d", or missing/invalid dave_protocol_version.
     """
     obj = _parse_json_op(payload)
     d = obj.get("d")
@@ -431,8 +457,14 @@ def parse_clients_connect(payload: bytes) -> list[str]:
     """
     Parse opcode 11 (Clients Connect) JSON payload. Server sends to client.
 
+    Args:
+        payload (bytes): UTF-8 JSON payload with "d.user_ids" (list of strings).
+
     Returns:
         list[str]: user_ids (Discord snowflake user IDs as strings).
+
+    Raises:
+        ValueError: If JSON invalid or user_ids missing/not a list of strings.
     """
     obj = _parse_json_op(payload)
     d = obj.get("d")
@@ -450,8 +482,14 @@ def parse_client_disconnect(payload: bytes) -> str:
     """
     Parse opcode 13 (Client Disconnect) JSON payload. Server sends to client.
 
+    Args:
+        payload (bytes): UTF-8 JSON payload with "d.user_id" (string).
+
     Returns:
         str: user_id (Discord snowflake user ID that disconnected).
+
+    Raises:
+        ValueError: If JSON invalid or user_id missing/not a string.
     """
     obj = _parse_json_op(payload)
     d = obj.get("d")
@@ -467,8 +505,14 @@ def parse_prepare_transition(payload: bytes) -> tuple[int, int]:
     """
     Parse opcode 21 (Prepare Transition) JSON payload. Server sends to client.
 
+    Args:
+        payload (bytes): UTF-8 JSON with "d.protocol_version" and "d.transition_id".
+
     Returns:
         tuple[int, int]: (protocol_version, transition_id). transition_id 0 = execute immediately.
+
+    Raises:
+        ValueError: If JSON invalid, fields missing, or transition_id not in uint16 range.
     """
     obj = _parse_json_op(payload)
     d = obj.get("d")
@@ -529,7 +573,10 @@ def build_ready_for_transition(transition_id: int) -> bytes:
         transition_id (int): Transition ID (uint16) the client is ready to execute.
 
     Returns:
-        bytes: UTF-8 JSON payload.
+        bytes: UTF-8 JSON payload, e.g. {"op":23,"d":{"transition_id":10}}.
+
+    Raises:
+        ValueError: If transition_id not in 0..65535.
     """
     if not 0 <= transition_id <= 0xFFFF:
         raise ValueError("transition_id must be uint16")
@@ -541,8 +588,17 @@ def parse_prepare_epoch(payload: bytes) -> tuple[int, int]:
     """
     Parse opcode 24 (Prepare Epoch) JSON payload. Server sends to client.
 
+    Args:
+        payload (bytes): UTF-8 JSON with "d.protocol_version" and "d.epoch".
+
     Returns:
         tuple[int, int]: (protocol_version, epoch). epoch 1 = new MLS group to be created.
+
+    Raises:
+        ValueError: If JSON invalid or protocol_version/epoch missing or not integers.
+
+    When to call: When the gateway tells the client to prepare an epoch; use epoch (e.g. 1)
+    to call session.prepare_epoch(epoch).
     """
     obj = _parse_json_op(payload)
     d = obj.get("d")

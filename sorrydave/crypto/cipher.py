@@ -143,8 +143,9 @@ def encrypt_interleaved(
     """
     Encrypt frame with interleaved unencrypted ranges.
 
-    Plaintext to encrypt is the concatenation of encrypted-range bytes (in order).
-    AAD is the concatenation of unencrypted-range bytes (in order).
+    Used by FrameEncryptor. Plaintext to encrypt is the concatenation of
+    encrypted-range bytes (in order). AAD is the concatenation of unencrypted-range
+    bytes (in order).
 
     Args:
         key (bytes): 16-byte AES key.
@@ -206,7 +207,8 @@ def decrypt_interleaved(
     """
     Decrypt interleaved frame.
 
-    Reconstructs AAD and ciphertext from ranges and verifies the tag.
+    Used by FrameDecryptor. Reconstructs AAD and ciphertext from ranges and
+    verifies the GCM tag.
 
     Args:
         key (bytes): 16-byte AES key.

@@ -4,6 +4,33 @@ Frame-level **encryption** and **decryption** with **codec-aware** unencrypted r
 
 ---
 
+## get_unencrypted_ranges
+
+```python
+get_unencrypted_ranges(frame: bytes, codec: str) -> list[UnencryptedRange]
+```
+
+Returns the list of byte ranges that must remain **plaintext** for the given codec. Used by `FrameEncryptor` and `FrameDecryptor`; you can call it directly to inspect which parts of a frame are left unencrypted.
+
+- **frame**: Raw encoded frame (e.g. OPUS, VP8, H264).
+- **codec**: Codec name; case-insensitive. Supported: `"OPUS"`, `"VP9"`, `"VP8"`, `"H264"` / `"H.264"`, `"H265"` / `"HEVC"`, `"AV1"`. Unknown → empty list (full frame encrypted).
+- **Returns**: List of `UnencryptedRange(offset, length)`. May be empty (OPUS, VP9, unknown).
+
+See [Codec details](#codec-details) for per-codec behavior.
+
+---
+
+## Frame layout
+
+Each **protocol frame** (output of encrypt, input of decrypt) has:
+
+1. **Payload**: Interleaved plaintext ranges (codec headers) and ciphertext (encrypted ranges), as computed by `get_unencrypted_ranges`.
+2. **Supplemental footer**: Appended at the end; see [Supplemental footer layout](#supplemental-footer-layout) below.
+
+For a diagram of the footer structure, see [Concepts → Frame layout](../concepts.md#frame-layout).
+
+---
+
 ## FrameEncryptor
 
 Encrypts **encoded** media frames (output of your codec encoder). Leaves codec-defined ranges in plaintext and appends the DAVE supplemental footer.
@@ -31,7 +58,7 @@ encrypt(encoded_frame: bytes, codec: str) -> bytes
 
 **Behavior**
 
-- Unencrypted ranges are computed by `get_unencrypted_ranges(frame, codec)` (see [Codecs](#codecs)).
+- Unencrypted ranges are computed by `get_unencrypted_ranges(frame, codec)` (see [Codec details](#codec-details)).
 - For H264/H265, 3-byte start codes in unencrypted sections are expanded to 4-byte; encryption is retried up to 10 times if a start code appears in ciphertext or footer.
 - Generation is `(nonce >> 24) & 0xFF`; key is `ratchet.get_key_for_generation(generation)`.
 - AAD for GCM is the concatenation of unencrypted range bytes; ciphertext is the concatenation of encrypted-range bytes, then interleaved back with plaintext ranges.
@@ -69,18 +96,18 @@ decrypt(protocol_frame: bytes) -> bytes
 
 ---
 
-## Codecs (unencrypted ranges)
+## Codec details
 
-Defined in `sorrydave.media.codecs.get_unencrypted_ranges(frame, codec)`:
+Behavior of `get_unencrypted_ranges(frame, codec)` per codec:
 
-| Codec | Unencrypted ranges |
-|-------|--------------------|
-| OPUS, VP9 | None (entire frame encrypted). |
-| VP8 | First 1 byte (delta frame) or first 10 bytes (key frame), per P bit (LSB of first byte). |
-| H264 | For each non-VCL NAL (type not in 1–5), 1-byte NAL header at NAL start. VCL encrypted. Annex B start codes. |
-| H265/HEVC | For each non-VCL NAL (type ≥ 32), 2-byte NAL header. VCL encrypted. Annex B start codes. |
-| AV1 | For each OBU: header byte, optional extension byte, optional LEB128 size; payload encrypted. OBU types 2, 8, 15 (temporal delimiter, tile list, padding) are skipped. |
-| Unknown | Empty list → full frame encrypted. |
+| Codec | Unencrypted part | Byte-level detail |
+|-------|------------------|-------------------|
+| **OPUS**, **VP9** | None | Entire frame encrypted. No headers left plaintext. |
+| **VP8** | First 1 or 10 bytes | **Delta frame** (P bit = 1 in first byte): 1 byte (frame header). **Key frame** (P bit = 0): 10 bytes (frame header). LSB of first byte is the P bit. |
+| **H264** | 1-byte NAL header per non-VCL NAL | **VCL NALs** (types 1–5): encrypted. **Non-VCL NALs** (e.g. SPS, PPS, SEI): only the 1-byte NAL type header at each NAL start is plaintext. Annex B start codes (`0x000001` / `0x00000001`); 3-byte in plaintext sections expanded to 4-byte by encryptor. |
+| **H265/HEVC** | 2-byte NAL header per non-VCL NAL | **VCL NALs**: encrypted. **Non-VCL NALs** (type ≥ 32): 2-byte NAL header at each NAL start is plaintext. Annex B start codes; same 3→4 byte expansion. |
+| **AV1** | OBU header + optional extension + optional size | Per **OBU**: 1-byte header; optional extension byte; optional LEB128 size. **Payload** of the OBU is encrypted. OBU types **2** (temporal delimiter), **8** (tile list), **15** (padding) are skipped (no payload). |
+| **Unknown** | None | Empty list; full frame is encrypted. |
 
 ---
 
@@ -96,13 +123,17 @@ Minimum footer size: 8 + 1 + 0 + 1 + 2 = 12 bytes. Maximum supplemental size: 25
 
 ---
 
-## Helper: protocol_frame_check
+## protocol_frame_check
 
 ```python
 protocol_frame_check(frame: bytes) -> bool
 ```
 
-Returns True if the frame has at least minimum length, ends with `0xFAFA`, and the supplemental size byte is in valid range. Used by passthrough logic to detect DAVE frames. Does not fully parse or verify the supplemental body.
+**Location:** `sorrydave.media.transform.protocol_frame_check`
+
+- **frame**: Byte string (e.g. received media packet).
+- **Returns**: `True` if the frame has at least minimum length, ends with the 2-byte magic `0xFAFA`, and the supplemental size byte (before the magic) is in valid range (so the footer looks like a DAVE protocol frame). `False` otherwise.
+- **Note:** Does not fully parse or verify the supplemental body (tag, nonce, ranges). Use for quick detection of DAVE frames in passthrough logic (e.g. skip decryption for non-DAVE packets).
 
 ---
 
@@ -117,5 +148,6 @@ These are used by `FrameEncryptor` / `FrameDecryptor`; most users only need the 
 
 ## API reference (auto-generated)
 
+::: sorrydave.media.codecs.get_unencrypted_ranges
 ::: sorrydave.media.transform.FrameEncryptor
 ::: sorrydave.media.transform.FrameDecryptor

@@ -101,11 +101,15 @@ def epoch_authenticator_display(epoch_authenticator_32_bytes: bytes) -> str:
     """
     Display epoch authenticator (32-byte exported secret) as 30-digit code.
 
+    Use for epoch authenticity verification UI when the protocol exposes an
+    epoch authenticator (e.g. MLS-exported secret). Both parties compare the
+    same 30-digit code to verify the epoch.
+
     Args:
         epoch_authenticator_32_bytes (bytes): At least 30 bytes of epoch authenticator.
 
     Returns:
-        str: 30-digit displayable code (6 groups of 5).
+        str: 30-digit displayable code (6 groups of 5); format with spaces in UI if desired.
 
     Raises:
         ValueError: If input is shorter than 30 bytes.

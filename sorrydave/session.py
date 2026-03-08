@@ -26,6 +26,17 @@ class DaveSession:
     High-level facade for managing a DAVE media session.
 
     Holds MLS group state, per-sender ratchets, and provides frame encrypt/decrypt.
+    Performs no I/O; you pass in bytes (opcode payloads, encoded frames) and get back bytes.
+
+    Typical usage:
+        1. Create: DaveSession(local_user_id=...).
+        2. Prepare epoch 1: prepare_epoch(1) -> send returned bytes as opcode 26.
+        3. Handle opcode 25: handle_external_sender_package(package_bytes).
+        4. Handle opcode 27: handle_proposals(proposal_bytes) -> send return value as opcode 28 if not None.
+        5. Handle opcode 29: parse_announce_commit then handle_commit(transition_id, commit_bytes).
+        6. Handle opcode 30 (if you were added): parse_welcome_message then handle_welcome(transition_id, welcome_bytes).
+        7. Handle opcode 22: parse_execute_transition then execute_transition(transition_id).
+        8. Media: get_encryptor().encrypt(frame, codec=...) and get_decryptor(sender_id).decrypt(protocol_frame).
     """
 
     def __init__(self, local_user_id: int, protocol_version: int = 1):

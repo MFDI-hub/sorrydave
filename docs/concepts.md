@@ -27,6 +27,33 @@ This page explains the main concepts used by sorrydave: epochs, transitions, the
 
 All opcode payloads are **bytes** (binary or UTF-8 JSON for 22/31). sorrydave does not open sockets; your application sends/receives these on the Voice Gateway.
 
+### Opcode flow (sequence)
+
+One typical path from join to media: gateway sends 25 → client sends 26 → gateway sends 27 → client sends 28 → gateway sends 29/30 → gateway sends 22 → client executes transition → media encrypt/decrypt.
+
+```mermaid
+sequenceDiagram
+    participant App as Your app
+    participant Session as DaveSession
+    participant Gateway as Voice Gateway
+
+    App->>Session: prepare_epoch(1)
+    Session-->>App: key_package bytes
+    App->>Gateway: opcode 26 (key package)
+    Gateway->>App: opcode 25 (external sender)
+    App->>Session: handle_external_sender_package(payload)
+    Gateway->>App: opcode 27 (proposals)
+    App->>Session: handle_proposals(payload)
+    Session-->>App: commit_welcome bytes
+    App->>Gateway: opcode 28 (commit/welcome)
+    Gateway->>App: opcode 29 (announce commit)
+    App->>Session: handle_commit(transition_id, commit_bytes)
+    Gateway->>App: opcode 22 (execute transition)
+    App->>Session: execute_transition(transition_id)
+    App->>Session: get_encryptor() / get_decryptor(sender_id)
+    App->>App: encrypt / decrypt media frames
+```
+
 ---
 
 ## Session lifecycle (high level)
@@ -58,6 +85,28 @@ Media frames are not encrypted as one contiguous block. Some bytes are left **un
 
 For H264/H265, 3-byte start codes (`0x000001`) in unencrypted sections are expanded to 4-byte (`0x00000001`) per protocol. The **supplemental footer** (at the end of each protocol frame) stores the 8-byte GCM tag, ULEB128 nonce, ULEB128 offset/length pairs for unencrypted ranges, size byte, and magic `0xFAFA`.
 
+### Frame layout
+
+Each **protocol frame** (the bytes produced by the encryptor or consumed by the decryptor) has this layout:
+
+| Part | Description |
+|------|--------------|
+| **Plaintext ranges** | Codec-specific header bytes that stay unencrypted (e.g. VP8 first byte, H264 NAL headers). May be empty for OPUS/VP9. |
+| **Encrypted payload** | Ciphertext from AES128-GCM for the rest of the frame. |
+| **Supplemental footer** | Appended by the encryptor; read by the decryptor. |
+
+**Supplemental footer structure** (from end of frame backward):
+
+| Field | Size | Description |
+|-------|------|-------------|
+| Magic | 2 bytes | `0xFA 0xFA` (DAVE footer marker). |
+| Size byte | 1 byte | Length of the ULEB128-encoded unencrypted-ranges data. |
+| Unencrypted ranges | ULEB128 | Offset/length pairs (ULEB128) for plaintext ranges. |
+| Nonce | ULEB128 (up to 5 bytes) | 32-bit truncated nonce; high byte is generation. |
+| GCM tag | 8 bytes | Truncated AES-GCM authentication tag. |
+
+The decryptor parses the footer to recover the nonce (and thus the key generation), the tag, and the plaintext ranges, then verifies and decrypts.
+
 ---
 
 ## Sender key ratchet
@@ -67,6 +116,14 @@ For H264/H265, 3-byte start codes (`0x000001`) in unencrypted sections are expan
 - **Encryptor**: Uses a monotonic nonce; generation = nonce >> 24; key = ratchet.get_key_for_generation(generation).
 - **Decryptor**: Reads footer, gets generation from nonce, looks up key (or derives and caches). Rejects **nonce reuse** and enforces **max forward gap** (DoS protection).
 - When the epoch changes (commit/welcome/execute transition), the session refreshes ratchets from the new exporter state.
+
+### Step-by-step (for implementers)
+
+1. **Base secret**: For each sender (including the local user), the session obtains a 16-byte base secret from the MLS group exporter with context = sender user ID (little-endian bytes).
+2. **KeyRatchet**: One ratchet per sender. Given a **generation** index (0, 1, 2, …), the ratchet derives a 128-bit AES key via HKDF from the base secret and generation. Keys are derived on demand and (for the decryptor) cached.
+3. **Encryptor**: For each outgoing frame, the encryptor uses a monotonic 32-bit nonce. The **generation** is the high byte (`nonce >> 24`). The ratchet provides the key for that generation; the nonce (truncated) and tag are stored in the frame footer.
+4. **Decryptor**: Reads the supplemental footer from the incoming frame to get the nonce and generation. Looks up or derives the key for that generation. Verifies the 8-byte GCM tag and decrypts. Rejects the frame on **nonce reuse** (same nonce twice) or if the generation is too far ahead (**max forward gap**) to limit DoS from forced key derivation.
+5. **Epoch change**: After `handle_commit`, `handle_welcome`, or `execute_transition`, the session discards or refreshes ratchets so send/receive keys come from the new MLS exporter state.
 
 ---
 

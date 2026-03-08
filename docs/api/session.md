@@ -25,6 +25,35 @@ DaveSession(local_user_id: int, protocol_version: int = 1)
 
 ---
 
+## Session state
+
+The session moves through these conceptual states:
+
+| State | Condition | get_encryptor() | get_decryptor(sender_id) |
+|-------|-----------|-----------------|---------------------------|
+| No group | Before `prepare_epoch(1)` and `handle_external_sender_package`, or after `leave_group()` | Raises **RuntimeError** | Raises **KeyError** |
+| Group, no transition | Group exists but opcode 22 not yet processed for current epoch | May work if send ratchet was refreshed (e.g. after create group) | May work for senders already in group |
+| After execute_transition | `execute_transition(transition_id)` was called for the current commit/welcome | Available | Available for senders in the new epoch |
+
+Call `get_encryptor()` and `get_decryptor(sender_id)` only after the session has a current send ratchet or receive ratchet for that sender (typically after the group is created and, for the epoch you care about, after `execute_transition` when the gateway sends opcode 22).
+
+---
+
+## Error handling
+
+| Method | Exceptions |
+|--------|------------|
+| `handle_external_sender_package` | **ValueError** on parse errors. |
+| `handle_proposals` | May raise on parse or group application errors. |
+| `handle_commit` | **InvalidCommitError** if no group or commit application fails. See [Troubleshooting](../troubleshooting.md#invalidcommiterror). |
+| `handle_welcome` | **ValueError** if no HPKE private key (e.g. `prepare_epoch(1)` not called). |
+| `get_encryptor` | **RuntimeError** if no send ratchet. See [Troubleshooting](../troubleshooting.md#runtimeerror-from-get_encryptor). |
+| `get_decryptor(sender_id)` | **KeyError** if no receive ratchet for that sender. See [Troubleshooting](../troubleshooting.md#keyerror-from-get_decryptorsender_id). |
+
+Catching **DaveProtocolError** (base of **DecryptionError** and **InvalidCommitError**) covers protocol-level failures.
+
+---
+
 ## Methods
 
 ### prepare_epoch
@@ -106,6 +135,16 @@ Processes **opcode 22** (Execute Transition). Rotates send and receive ratchets 
 
 - **transition_id**: Transition ID from the opcode 22 payload (e.g. from `parse_execute_transition`).
 
+**Example:** After receiving opcode 22 from the gateway, parse and execute so ratchets rotate to the new epoch:
+
+```python
+from sorrydave.mls import parse_execute_transition
+
+transition_id = parse_execute_transition(payload_22)
+session.execute_transition(transition_id)
+# Now get_encryptor() and get_decryptor(sender_id) use new epoch keys
+```
+
 ---
 
 ### leave_group
@@ -144,6 +183,18 @@ Returns a **FrameDecryptor** for the given remote sender.
 - **sender_id** (int): Remote sender’s user ID.
 - **Returns**: `FrameDecryptor` instance.
 - **Raises**: **KeyError** if no receive ratchet exists for that sender (e.g. not in group or leaf unknown). The session may try to refresh receive ratchets once before raising.
+
+**Example:** Encrypt one outgoing frame and decrypt one incoming frame (after group is ready and execute_transition has been called):
+
+```python
+encryptor = session.get_encryptor()
+encrypted = encryptor.encrypt(encoded_frame, codec="OPUS")
+# send encrypted over media channel
+
+decryptor = session.get_decryptor(remote_sender_id)
+decrypted = decryptor.decrypt(protocol_frame)
+# pass decrypted to codec decoder
+```
 
 ---
 

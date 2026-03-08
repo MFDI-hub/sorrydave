@@ -11,6 +11,9 @@ class UnencryptedRange:
     """
     Byte range that must remain plaintext for SFU routing (e.g. codec headers).
 
+    When to use: Typically produced by get_unencrypted_ranges(frame, codec) or the
+    decrypt path; use when you need to know which parts of a frame are plaintext.
+
     Attributes:
         offset (int): Start offset in the frame.
         length (int): Number of bytes in the range.
@@ -24,6 +27,9 @@ class UnencryptedRange:
 class ProtocolSupplementalData:
     """
     Parsed DAVE protocol footer (supplemental data).
+
+    When to use: Low-level code that inspects the footer; most callers only use
+    the decrypted frame bytes from FrameDecryptor.decrypt().
 
     Layout: 8-byte tag, ULEB128 nonce, ULEB128 offset/length pairs, 1-byte size, 2-byte magic 0xFAFA.
 
@@ -45,6 +51,9 @@ class DaveConfiguration:
     """
     Immutable configuration for DAVE protocol version and ciphersuite.
 
+    When to use: Reference for default protocol version and ciphersuites; future
+    session constructors may accept this for overrides.
+
     Attributes:
         protocol_version (int): DAVE protocol version. Defaults to 1.
         mls_ciphersuite (int): MLS ciphersuite ID (e.g. 2 = DHKEMP256_AES128GCM_SHA256_P256).
@@ -62,6 +71,8 @@ class DaveConfiguration:
 class IdentityConfig:
     """
     Configuration for identity key storage (ephemeral vs persistent).
+
+    When to use: Reference for future identity storage options; not yet used by the session.
 
     Attributes:
         is_persistent (bool): Whether to persist keys. Defaults to False.

@@ -76,6 +76,15 @@ class UnencryptedRange:
 
 Describes a byte range that must remain **plaintext** (e.g. codec headers for SFU routing). Used in `ProtocolSupplementalData` and by the media transform.
 
+**When to use:** You typically do not construct these yourself; `get_unencrypted_ranges(frame, codec)` and the decrypt path produce them. Use when you need to know which parts of a frame are plaintext (e.g. for debugging or custom handling).
+
+**Example:**
+
+```python
+from sorrydave import UnencryptedRange
+ranges = [UnencryptedRange(offset=0, length=1)]  # e.g. VP8 first byte
+```
+
 ---
 
 ### ProtocolSupplementalData
@@ -90,6 +99,10 @@ class ProtocolSupplementalData:
 ```
 
 Parsed DAVE protocol footer (supplemental data). Layout: 8-byte tag, ULEB128 nonce, ULEB128 offset/length pairs, 1-byte size, 2-byte magic `0xFAFA`. Returned by the decrypt path when parsing the footer; most users only need the decrypted frame bytes.
+
+**When to use:** Low-level code that inspects the footer (e.g. tag, nonce, unencrypted ranges). Most callers only use the decrypted frame bytes from `FrameDecryptor.decrypt()`.
+
+**Example:** The decryptor parses the frame and returns plaintext; supplemental data is used internally. To inspect it you would use the cipher/transform layer directly.
 
 ---
 
@@ -106,6 +119,15 @@ class DaveConfiguration:
 
 Immutable configuration for DAVE protocol version and ciphersuites. Currently **DaveSession** does not take this type in the constructor (it uses default behavior); it is provided for reference and future use.
 
+**When to use:** Reference for default protocol version and ciphersuites. Future session constructors may accept this for overrides.
+
+**Example:**
+
+```python
+from sorrydave import DaveConfiguration
+config = DaveConfiguration(protocol_version=1, mls_ciphersuite=2)
+```
+
 ---
 
 ### IdentityConfig
@@ -118,6 +140,15 @@ class IdentityConfig:
 ```
 
 Configuration for identity key storage (ephemeral vs persistent). Currently the library does not persist keys; this type is for reference and future use.
+
+**When to use:** Reference for future identity storage options (e.g. persistent keys). Not yet used by the session.
+
+**Example:**
+
+```python
+from sorrydave import IdentityConfig
+cfg = IdentityConfig(is_persistent=False)
+```
 
 ---
 

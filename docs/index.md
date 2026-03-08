@@ -4,6 +4,20 @@
 
 ---
 
+## How to use this documentation
+
+This documentation is for **application developers** integrating DAVE into a Voice Gateway or media pipeline. Suggested path:
+
+1. **[Installation](installation.md)** — Python version, dependencies, and how to install sorrydave (and optional docs/dev extras).
+2. **[Quick start](quickstart.md)** — Minimal session lifecycle: create session, prepare epoch, handle opcodes 25–30 and 22, encrypt/decrypt media, and error recovery.
+3. **[Concepts](concepts.md)** — Epochs, transitions, opcode flow, codec-aware encryption, sender key ratchet, and identity.
+4. **[Architecture](architecture.md)** — Where sorrydave sits in the stack, component diagram, and file map.
+5. **API** — Session, Media, Identity, MLS & opcodes, Types & exceptions. Use these when you need method signatures, parameters, and detailed behavior.
+
+For **troubleshooting** common errors (InvalidCommitError, DecryptionError, missing ratchets), see [Troubleshooting](troubleshooting.md).
+
+---
+
 ## What DAVE does
 
 DAVE provides **end-to-end encryption** for Discord voice/video: only participants in a call have the keys. The library handles:
@@ -67,14 +81,17 @@ DAVE provides **end-to-end encryption** for Discord voice/video: only participan
 
 | Page | Contents |
 |------|----------|
-| [Installation](installation.md) | Python version, dependencies, pip/uv, optional docs build. |
+| [Installation](installation.md) | Python version, dependencies, pip/uv, optional docs build, troubleshooting. |
 | [Quick start](quickstart.md) | Minimal session lifecycle: create session, prepare epoch, handle opcodes 25–30, execute transition, encrypt/decrypt, error recovery. |
-| [Concepts](concepts.md) | Epochs, transitions, opcode flow, codec handling, identity. |
+| [Concepts](concepts.md) | Epochs, transitions, opcode flow, codec handling, frame layout, identity. |
+| [Architecture](architecture.md) | Component diagram, data flow, and mapping from docs to source files. |
+| [Troubleshooting](troubleshooting.md) | Common errors, recovery steps, and debug tips. |
 | [API → Session](api/session.md) | `DaveSession`: all methods, parameters, return values, errors. |
-| [API → Media](api/media.md) | `FrameEncryptor`, `FrameDecryptor`, codecs, supplemental data. |
+| [API → Media](api/media.md) | `FrameEncryptor`, `FrameDecryptor`, `get_unencrypted_ranges`, codecs, supplemental data. |
 | [API → Identity](api/identity.md) | `generate_fingerprint`, `displayable_code`, epoch authenticator. |
-| [API → MLS & opcodes](api/mls.md) | Opcodes 22, 25–31; parse/build; group_state helpers. |
+| [API → MLS & opcodes](api/mls.md) | Opcodes 22, 25–31 and other Voice Gateway opcodes; parse/build; group_state helpers. |
 | [API → Types & exceptions](api/types.md) | `DaveConfiguration`, `IdentityConfig`, `UnencryptedRange`, `ProtocolSupplementalData`, exceptions. |
+| [API → Full reference](api/reference.md) | Auto-generated list of all public symbols in sorrydave, mls, media, crypto. |
 
 ---
 
@@ -83,4 +100,6 @@ DAVE provides **end-to-end encryption** for Discord voice/video: only participan
 - [Installation](installation.md)
 - [Quick start](quickstart.md)
 - [Concepts](concepts.md)
+- [Architecture](architecture.md)
+- [Troubleshooting](troubleshooting.md)
 - [API reference](api/session.md)

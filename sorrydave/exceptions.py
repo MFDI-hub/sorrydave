@@ -9,7 +9,8 @@ class DaveProtocolError(Exception):
     """
     Base exception for all DAVE protocol errors.
 
-    Catch this to handle any protocol-level failure.
+    When raised: Any protocol-level failure from the library. Catch this to handle
+    all DAVE errors (including DecryptionError and InvalidCommitError) in one block.
     """
 
     pass
@@ -19,7 +20,8 @@ class DecryptionError(DaveProtocolError):
     """
     Raised on decryption failure: GCM tag mismatch, nonce reuse, or key mismatch.
 
-    Fail-closed: drop the frame and do not process.
+    When raised: Typically from FrameDecryptor.decrypt(). Fail-closed: drop the
+    frame and do not process; do not retry with the same frame.
     """
 
     pass
@@ -29,7 +31,9 @@ class InvalidCommitError(DaveProtocolError):
     """
     Raised when a commit or welcome message cannot be processed.
 
-    Triggers state reset; application should send opcode 31 and submit new KeyPackage (26).
+    When raised: From session.handle_commit() (or group_state.apply_commit).
+    Recovery: Send opcode 31 (build_invalid_commit_welcome(transition_id)), then
+    session.prepare_epoch(1) and send the returned key package as opcode 26.
     """
 
     pass

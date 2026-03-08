@@ -53,9 +53,12 @@ nav:
   - Installation: installation.md
   - Quick start: quickstart.md
   - Concepts: concepts.md
+  - Architecture: architecture.md
+  - Troubleshooting: troubleshooting.md
   - API:
       - Session: api/session.md
       - Media: api/media.md
       - Identity: api/identity.md
       - MLS & opcodes: api/mls.md
       - Types & exceptions: api/types.md
+      - Full API reference: api/reference.md

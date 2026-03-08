@@ -4,6 +4,17 @@ Identity utilities for **pairwise verification** and **displayable codes**: fing
 
 ---
 
+## Verification workflow
+
+| Use case | Function | Output | When to use |
+|----------|----------|--------|-------------|
+| **Pairwise verification** (verify this user) | `generate_fingerprint(local_id, local_pub, remote_id, remote_pub)` | 45-digit string (9×5) | Both participants compare the same fingerprint out-of-band (e.g. read aloud, or compare on screen) to confirm they are in the same E2EE session. |
+| **Epoch authenticity** | `epoch_authenticator_display(epoch_authenticator_32_bytes)` | 30-digit string (6×5) | When the protocol exposes an epoch authenticator (e.g. MLS export), show this code so participants can verify the epoch. |
+
+**Typical UI flow:** Display the code (with optional spaces every 5 digits). The other party computes the same value and compares; if they match, verification succeeds.
+
+---
+
 ## generate_fingerprint
 
 ```python
@@ -36,6 +47,32 @@ Encodes a byte array as a **displayable numeric code**.
 - **Raises**: **ValueError** if `total_digits % group_size != 0`, `group_size >= 8`, or `data` is shorter than required.
 
 **Example**: 64-byte fingerprint output → 45 digits = 9×5 → need 9×5 = 45 bytes; scrypt output is 64 bytes, so first 45 bytes are used.
+
+**Full example (pairwise fingerprint + display):**
+
+```python
+from sorrydave import generate_fingerprint, displayable_code
+
+# Local and remote user IDs and public keys (e.g. from MLS / key package)
+local_id = 123456789
+local_pub = b"..."   # signature or HPKE public key
+remote_id = 987654321
+remote_pub = b"..."
+
+fingerprint = generate_fingerprint(local_id, local_pub, remote_id, remote_pub)
+# fingerprint is 45 digits; format for UI e.g. "12345 67890 ..." (9 groups of 5)
+display_string = " ".join(fingerprint[i:i+5] for i in range(0, 45, 5))
+```
+
+**Full example (epoch authenticator):**
+
+```python
+from sorrydave.identity import epoch_authenticator_display
+
+# epoch_authenticator_32_bytes from MLS export (32 bytes)
+code = epoch_authenticator_display(epoch_authenticator_32_bytes)
+# code is 30 digits (6 groups of 5); show in UI for comparison
+```
 
 ---
 
@@ -73,3 +110,4 @@ In `sorrydave.identity`:
 
 ::: sorrydave.identity.generate_fingerprint
 ::: sorrydave.identity.displayable_code
+::: sorrydave.identity.epoch_authenticator_display

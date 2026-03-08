@@ -1,6 +1,13 @@
 """
 Codec-aware unencrypted range parsers for DAVE frame transform.
-OPUS, VP9 (full encrypt); VP8 (P-bit header); H264, H265 (NAL); AV1 (OBU).
+
+Supported codecs and plaintext ranges:
+    OPUS, VP9: full frame encrypted (no unencrypted ranges).
+    VP8: first 1 byte (delta) or 10 bytes (key frame), per P bit in first byte.
+    H264: 1-byte NAL header for non-VCL NALs; VCL encrypted; Annex B start codes.
+    H265/HEVC: 2-byte NAL header for non-VCL NALs; VCL encrypted; Annex B start codes.
+    AV1: OBU header, optional extension, optional LEB128 size; payload encrypted; OBU types 2, 8, 15 skipped.
+    Unknown codec: empty list (entire frame encrypted).
 """
 
 from sorrydave.types import UnencryptedRange
@@ -21,13 +28,13 @@ def get_unencrypted_ranges(frame: bytes, codec: str) -> list[UnencryptedRange]:
     """
     Return unencrypted byte ranges for the given codec and frame.
 
-    OPUS, VP9: full frame encrypted -> []. VP8: 1 or 10 bytes by P bit. H264/H265:
-    non-VCL NAL header unencrypted. AV1: OBU header/extension/size unencrypted.
-    Unknown codec or parse error returns [] (full encrypt).
+    Used by FrameEncryptor and FrameDecryptor. Codec name is case-insensitive.
+    Supported: OPUS, VP9, VP8, H264/H.264, H265/HEVC, AV1. Unknown codec or
+    parse error returns [] (full frame encrypted).
 
     Args:
         frame (bytes): Encoded media frame.
-        codec (str): Codec name (e.g. "VP8", "H264", "AV1").
+        codec (str): Codec name (e.g. "OPUS", "VP8", "H264", "AV1").
 
     Returns:
         list[UnencryptedRange]: Ranges to leave plaintext; empty means encrypt entire frame.

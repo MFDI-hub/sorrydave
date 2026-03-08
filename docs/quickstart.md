@@ -4,6 +4,13 @@ This page walks through a minimal DAVE media session lifecycle: create a session
 
 ---
 
+## Prerequisites
+
+- **Python 3.9+** with sorrydave installed (see [Installation](installation.md)).
+- Your application is responsible for **Voice Gateway I/O**: sending and receiving opcode payloads (e.g. over WebSocket) and media frames. sorrydave only consumes and produces bytes; it does not open sockets or perform network I/O.
+
+---
+
 ## 1. Create a session
 
 Create a `DaveSession` with your local user ID (e.g. Discord snowflake). The session holds MLS group state and per-sender ratchets; it does not perform any I/O.
@@ -171,8 +178,73 @@ After `leave_group()`, the session has no group; you must go through prepare_epo
 
 ---
 
+## Full example (end-to-end script)
+
+The script below wires a minimal session to stub I/O. Replace `send_opcode_*` and the "receive" placeholders with your real Voice Gateway and media pipeline.
+
+```python
+from sorrydave import DaveSession
+from sorrydave.mls import (
+    parse_announce_commit,
+    parse_execute_transition,
+    parse_external_sender_package,
+    parse_welcome_message,
+)
+
+def send_opcode_26(payload: bytes) -> None:
+    """Send key package to voice gateway."""
+    pass  # Your implementation
+
+def send_opcode_28(payload: bytes) -> None:
+    """Send commit/welcome to voice gateway."""
+    pass  # Your implementation
+
+# 1. Create session
+session = DaveSession(local_user_id=123456789)
+
+# 2. Prepare epoch 1 and send key package
+key_package = session.prepare_epoch(1)
+if key_package:
+    send_opcode_26(key_package)
+
+# 3. When you receive opcode 25 (external sender package)
+# package_25_bytes = ...  # from gateway
+# session.handle_external_sender_package(package_25_bytes)
+
+# 4. When you receive opcode 27 (proposals)
+# proposal_bytes = ...  # from gateway
+# commit_payload = session.handle_proposals(proposal_bytes)
+# if commit_payload:
+#     send_opcode_28(commit_payload)
+
+# 5. When you receive opcode 29 (announce commit)
+# payload_29 = ...  # from gateway
+# transition_id, commit_bytes = parse_announce_commit(payload_29)
+# session.handle_commit(transition_id, commit_bytes)
+
+# 6. When you receive opcode 30 (welcome, if you were added)
+# payload_30 = ...  # from gateway
+# transition_id, welcome_bytes = parse_welcome_message(payload_30)
+# session.handle_welcome(transition_id, welcome_bytes)
+
+# 7. When you receive opcode 22 (execute transition)
+# payload_22 = ...  # from gateway
+# transition_id = parse_execute_transition(payload_22)
+# session.execute_transition(transition_id)
+
+# 8. Encrypt one outgoing frame and decrypt one incoming (after group is ready)
+# encryptor = session.get_encryptor()
+# encrypted = encryptor.encrypt(encoded_frame, codec="OPUS")
+# decryptor = session.get_decryptor(remote_sender_id)
+# decrypted = decryptor.decrypt(protocol_frame)
+```
+
+---
+
 ## Next steps
 
-- [Concepts](concepts.md) — Epochs, transitions, opcode flow, codecs, identity.
+- [Concepts](concepts.md) — Epochs, transitions, opcode flow, codecs, identity, frame layout.
+- [Architecture](architecture.md) — Component diagram and data flow.
 - [API → Session](api/session.md) — All `DaveSession` methods and parameters.
-- [API → MLS & opcodes](api/mls.md) — Parse/build for opcodes 22, 25–31.
+- [API → MLS & opcodes](api/mls.md) — Parse/build for opcodes 22, 25–31 and other Voice Gateway opcodes.
+- [Troubleshooting](troubleshooting.md) — Common errors and recovery.

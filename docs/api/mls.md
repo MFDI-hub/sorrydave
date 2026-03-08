@@ -113,9 +113,137 @@ Use after catching **InvalidCommitError**; then call `session.prepare_epoch(1)` 
 
 ---
 
+## Other Voice Gateway opcodes
+
+These parse/build functions handle JSON or binary payloads used by the Voice Gateway for protocol handshake and lifecycle. Your app typically calls them when dispatching gateway messages.
+
+### build_identify
+
+```python
+build_identify(max_dave_protocol_version: int = 1, **d_extra: object) -> bytes
+```
+
+Builds the **Identify** message payload (UTF-8 JSON) to send when connecting to the Voice Gateway. Includes `d.dave_protocol_version` (or similar) and any extra keys in `d`.
+
+- **max_dave_protocol_version**: Maximum DAVE protocol version the client supports (default 1).
+- **d_extra**: Optional key-value pairs merged into the `d` object.
+- **Returns**: Bytes to send as the identify payload (e.g. over WebSocket).
+
+**When to call:** At connection start, before the gateway sends select_protocol_ack or prepare_epoch.
+
+---
+
+### parse_select_protocol_ack
+
+```python
+parse_select_protocol_ack(payload: bytes) -> int
+```
+
+Parses the **select_protocol_ack** response (UTF-8 JSON) from the gateway. Returns the negotiated DAVE protocol version.
+
+- **payload**: Raw bytes of the ack message.
+- **Returns**: Protocol version (int).
+- **Raises:** `ValueError` if JSON invalid or version missing.
+
+**When to call:** After sending identify; use the returned version and then call `session.prepare_epoch(1)` when the gateway signals to prepare epoch.
+
+---
+
+### parse_clients_connect
+
+```python
+parse_clients_connect(payload: bytes) -> list[str]
+```
+
+Parses a **clients_connect**-style payload (UTF-8 JSON) listing client/user identifiers that joined.
+
+- **payload**: Raw bytes of the message.
+- **Returns**: List of client IDs (strings).
+
+**When to call:** When the gateway notifies that clients have connected; use for UI or to know who may send media.
+
+---
+
+### parse_client_disconnect
+
+```python
+parse_client_disconnect(payload: bytes) -> str
+```
+
+Parses a **client_disconnect** payload (UTF-8 JSON) and returns the disconnected client ID.
+
+- **payload**: Raw bytes of the message.
+- **Returns**: Client ID (string).
+
+**When to call:** When the gateway notifies that a client disconnected.
+
+---
+
+### parse_prepare_transition
+
+```python
+parse_prepare_transition(payload: bytes) -> tuple[int, int]
+```
+
+Parses a **prepare_transition** payload (UTF-8 JSON). Returns the transition ID and epoch (or similar) the gateway is preparing.
+
+- **payload**: Raw bytes of the message (UTF-8 JSON with "d.protocol_version" and "d.transition_id").
+- **Returns**: `(protocol_version, transition_id)`. transition_id 0 means execute immediately.
+- **Raises:** `ValueError` if JSON invalid, fields missing, or transition_id not in uint16 range.
+
+**When to call:** When the gateway signals that a transition is being prepared (before opcode 22).
+
+---
+
+### build_ready_for_transition
+
+```python
+build_ready_for_transition(transition_id: int) -> bytes
+```
+
+Builds the **ready_for_transition** payload (UTF-8 JSON) to send to the gateway to acknowledge readiness for the given transition.
+
+- **transition_id**: Transition ID (0–65535).
+- **Returns**: Bytes to send as the ready payload.
+
+**When to call:** After processing commit/welcome and before or when the gateway sends opcode 22; confirms the client is ready to execute the transition.
+
+---
+
+### parse_prepare_epoch
+
+```python
+parse_prepare_epoch(payload: bytes) -> tuple[int, int]
+```
+
+Parses a **prepare_epoch** payload (UTF-8 JSON) from the gateway. Returns the epoch ID and optional protocol version or similar.
+
+- **payload**: Raw bytes of the message (UTF-8 JSON with "d.protocol_version" and "d.epoch").
+- **Returns**: `(protocol_version, epoch)`. epoch 1 means new MLS group to be created.
+- **Raises:** `ValueError` if JSON invalid or protocol_version/epoch missing or not integers.
+
+**When to call:** When the gateway tells the client to prepare an epoch; use the epoch (e.g. 1) to call `session.prepare_epoch(epoch_id)`.
+
+---
+
 ## Group state (sorrydave.mls.group_state)
 
-These functions are used internally by `DaveSession` but can be used for custom flows.
+These functions are used internally by `DaveSession` but can be used for custom flows. Short reference:
+
+| Function | Used by DaveSession when … |
+|----------|----------------------------|
+| `get_dave_crypto_provider` | Creating key packages and groups; provides rfc9420 crypto for DAVE ciphersuite. |
+| `create_key_package` | `prepare_epoch(1)` to build the key package and store HPKE/signing keys. |
+| `create_group` | `handle_external_sender_package` (with key package ready) to create the initial group. |
+| `join_from_welcome` | `handle_welcome` to join the group from a Welcome message. |
+| `export_sender_base_secret` | Refreshing send/receive ratchets (per-sender base secret for KeyRatchet). |
+| `apply_commit` | `handle_commit` to apply an announced commit to the group. |
+| `process_proposal` | `handle_proposals` to apply each proposal before creating a commit. |
+| `create_commit_and_welcome` | `handle_proposals` to build the opcode 28 payload. |
+| `create_remove_proposal_for_self` | `leave_group` to build the Remove proposal for the local member. |
+| `create_update_proposal` | Optional; to refresh the local member’s leaf (not called by default session flow). |
+| `validate_group_external_sender` | Validating the external sender against the group. |
+| `get_external_senders_from_group` | Reading external sender data from the group. |
 
 ### get_dave_crypto_provider
 

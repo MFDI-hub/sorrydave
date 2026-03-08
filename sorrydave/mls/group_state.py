@@ -1,6 +1,22 @@
 """
 MLS group state manager: rfc9420 integration for DAVE.
+
 Creates group, key package, processes commit/welcome, exports sender base secret.
+Used by DaveSession for group lifecycle; can also be used for custom flows.
+
+Public functions:
+    get_dave_crypto_provider: DAVE MLS ciphersuite crypto provider.
+    create_key_package: Key package for a user; used by DaveSession.prepare_epoch(1).
+    create_group: New MLS group with one member; used when handling opcode 25.
+    join_from_welcome: Join from Welcome message; used by DaveSession.handle_welcome.
+    export_sender_base_secret: 16-byte base secret for KeyRatchet; used when refreshing ratchets.
+    apply_commit: Apply received commit; used by DaveSession.handle_commit.
+    process_proposal: Apply one proposal; used by DaveSession.handle_proposals.
+    create_commit_and_welcome: Build commit and welcomes; used by DaveSession.handle_proposals.
+    create_remove_proposal_for_self: Remove proposal for local member; used by DaveSession.leave_group.
+    create_update_proposal: Update proposal to refresh leaf keys; optional.
+    validate_group_external_sender: Check external sender matches; used when applying commits.
+    get_external_senders_from_group: Read external senders from group context.
 """
 
 from __future__ import annotations
@@ -59,6 +75,8 @@ def get_dave_crypto_provider() -> DefaultCryptoProvider:
     """
     Return rfc9420 DefaultCryptoProvider with DAVE MLS ciphersuite (2).
 
+    Used by DaveSession when creating key packages and groups.
+
     Returns:
         DefaultCryptoProvider: Instance for DHKEMP256_AES128GCM_SHA256_P256.
     """
@@ -74,7 +92,8 @@ def create_key_package(
     """
     Create a KeyPackage for the given user_id (64-bit e.g. Discord snowflake).
 
-    Identity is big-endian user_id (8 bytes). Lifetime not_before=0, not_after=2^64-1.
+    Used by DaveSession when prepare_epoch(1) is called. Identity is big-endian user_id (8 bytes).
+    Lifetime not_before=0, not_after=2^64-1.
 
     Args:
         user_id (int): User identifier (64-bit).
@@ -321,9 +340,10 @@ def create_group(
     """
     Create a new MLS group with the given key package (single member).
 
-    When external sender parameters are provided, the group extensions will
-    include the required external_senders extension (type 0x0002) per RFC 9420
-    section 12.1.8.1.  This is mandatory for the DAVE protocol.
+    Used by DaveSession when handle_external_sender_package is called and a key package
+    was already prepared. When external sender parameters are provided, the group
+    extensions include the required external_senders extension (type 0x0002) per
+    RFC 9420 section 12.1.8.1. This is mandatory for the DAVE protocol.
     """
     if crypto is None:
         crypto = get_dave_crypto_provider()
@@ -352,6 +372,8 @@ def join_from_welcome(
     """
     Join group from Welcome message.
 
+    Used by DaveSession when handle_welcome is called (client was added to the group).
+
     Args:
         welcome_bytes (bytes): Serialized MLS Welcome message.
         hpke_private_key (bytes): HPKE private key from the KeyPackage used in the Add.
@@ -373,6 +395,7 @@ def export_sender_base_secret(group: Group, sender_user_id: int) -> bytes:
     """
     Export 16-byte sender base secret via MLS Exporter.
 
+    Used by DaveSession when refreshing send/receive ratchets (KeyRatchet base secret).
     Uses label "Discord Secure Frames v0" and context = little-endian 64-bit sender user ID.
 
     Args:
@@ -426,8 +449,9 @@ def apply_commit(group: Group, commit_mls_plaintext_bytes: bytes, sender_leaf_in
     """
     Apply a received commit to the group.
 
-    Per DAVE client commit validity, raises InvalidCommitError if the resulting
-    group would have duplicate basic credentials (user IDs).
+    Used by DaveSession when handle_commit is called. Per DAVE client commit validity,
+    raises InvalidCommitError if the resulting group would have duplicate basic
+    credentials (user IDs).
 
     Args:
         group (Group): rfc9420 Group instance.
@@ -460,6 +484,9 @@ def process_proposal(
     """
     Process a proposal (e.g. Add/Remove from external sender).
 
+    Used by DaveSession when handle_proposals is called to apply each proposal
+    before creating a commit.
+
     Args:
         group (Group): rfc9420 Group instance.
         proposal_mls_plaintext_bytes (bytes): Serialized MLS Plaintext proposal.
@@ -478,6 +505,8 @@ def create_commit_and_welcome(group: Group, signing_key_der: bytes) -> tuple[byt
     """
     Create commit and optional welcome messages.
 
+    Used by DaveSession when handle_proposals returns the opcode 28 payload (commit + optional welcome).
+
     Args:
         group (Group): rfc9420 Group instance with pending proposals.
         signing_key_der (bytes): Signing private key (DER) for the committing member.
@@ -495,6 +524,8 @@ def create_commit_and_welcome(group: Group, signing_key_der: bytes) -> tuple[byt
 def create_remove_proposal_for_self(group: Group, signing_key_der: bytes) -> bytes:
     """
     Create an MLS Remove proposal for the local member (self-remove).
+
+    Used by DaveSession when leave_group is called; return value is sent as opcode 27.
 
     Args:
         group (Group): rfc9420 Group instance.
