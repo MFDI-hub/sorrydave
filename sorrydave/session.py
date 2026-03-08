@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Union
 
 from sorrydave.crypto.ratchet import KeyRatchet
 from sorrydave.media.transform import FrameDecryptor, FrameEncryptor
-from sorrydave.mls.opcodes import ExternalSenderPackage
+from sorrydave.mls.group_state import (
+    create_group,
+    get_dave_crypto_provider,
+    validate_group_external_sender,
+)
+from sorrydave.mls.opcodes import ExternalSenderPackage, parse_external_sender_package
 
 if TYPE_CHECKING:
     from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
@@ -48,20 +53,33 @@ class DaveSession:
         self._key_package_bytes: Union[bytes, None] = None
         self._group_id = b"dave-default-group"
 
-    def handle_external_sender_package(self, package_bytes: bytes) -> None:
+    def handle_external_sender_package(self, pkg: Union[ExternalSenderPackage, bytes]) -> None:
         """
-        Process opcode 25: store external sender; create local group if key package is ready.
+        Process opcode 25: store voice gateway external sender and optionally create group.
+
+        When we already have a key package (e.g. after prepare_epoch(1)), creates a local
+        group with the external sender. Call before create_group or before handle_welcome.
 
         Args:
-            package_bytes (bytes): Serialized external sender package (opcode 25 payload).
+            pkg (Union[ExternalSenderPackage, bytes]): Parsed package or raw opcode 25 payload.
         """
-        from sorrydave.mls.group_state import create_group
-        from sorrydave.mls.opcodes import parse_external_sender_package
-
-        self._external_sender = parse_external_sender_package(package_bytes)
-        if self._key_package_bytes is not None and self._group is None and self._crypto is not None:
-            self._group = create_group(self._group_id, self._key_package_bytes, self._crypto)
-            self._refresh_send_ratchet()
+        if isinstance(pkg, bytes):
+            pkg = parse_external_sender_package(pkg)
+        self._external_sender = pkg
+        if self._group is not None:
+            return
+        if self._key_package_bytes is None:
+            return
+        if self._crypto is None:
+            self._crypto = get_dave_crypto_provider()
+        self._group = create_group(
+            self._group_id,
+            self._key_package_bytes,
+            self._crypto,
+            external_sender_signature_key=pkg.signature_key,
+            external_sender_credential_type=pkg.credential_type,
+            external_sender_identity=pkg.identity,
+        )
 
     def prepare_epoch(self, epoch_id: int) -> Union[bytes, None]:
         """
@@ -75,7 +93,7 @@ class DaveSession:
         """
         if epoch_id != 1:
             return None
-        from sorrydave.mls.group_state import create_key_package, get_dave_crypto_provider
+        from sorrydave.mls.group_state import create_key_package
         from sorrydave.mls.opcodes import build_key_package_message
 
         if self._crypto is None:
@@ -84,6 +102,15 @@ class DaveSession:
         self._hpke_private_key = hpke_private
         self._signing_key_der = signing_der
         self._key_package_bytes = kp_bytes
+        if self._external_sender is not None and self._group is None:
+            self._group = create_group(
+                self._group_id,
+                self._key_package_bytes,
+                self._crypto,
+                external_sender_signature_key=self._external_sender.signature_key,
+                external_sender_credential_type=self._external_sender.credential_type,
+                external_sender_identity=self._external_sender.identity,
+            )
         return build_key_package_message(kp_bytes)
 
     def handle_proposals(self, proposal_bytes: bytes) -> Union[bytes, None]:
@@ -107,16 +134,32 @@ class DaveSession:
             return None
         if proposals_msg.operation_type != 0 or not proposals_msg.proposal_messages:
             return None
-        # Try to process each proposal (may fail if external sender not in tree)
-        for msg_bytes in proposals_msg.proposal_messages:
-            try:
-                from rfc9420.protocol.data_structures import Sender, SenderType
-                from rfc9420.protocol.messages import MLSPlaintext as MLSPlaintextRfc
+        from rfc9420.protocol.data_structures import ProposalType, Sender, SenderType
+        from rfc9420.protocol.messages import MLSPlaintext as MLSPlaintextRfc
 
+        from sorrydave.mls.opcodes import split_proposal_messages_vector
+
+        allowed_proposal_types = {ProposalType.ADD, ProposalType.REMOVE}
+        vector_blob = proposals_msg.proposal_messages[0]
+        for msg_bytes in split_proposal_messages_vector(vector_blob):
+            try:
                 msg = MLSPlaintextRfc.deserialize(msg_bytes)
+                sender = msg.auth_content.tbs.framed_content.sender
+                if sender.sender_type != SenderType.EXTERNAL:
+                    continue
+                content = msg.auth_content.tbs.framed_content.content
+                proposal_type = getattr(content, "proposal_type", None)
+                if proposal_type is None:
+                    type_name = type(content).__name__
+                    if type_name == "AddProposal":
+                        proposal_type = ProposalType.ADD
+                    elif type_name == "RemoveProposal":
+                        proposal_type = ProposalType.REMOVE
+                if proposal_type not in allowed_proposal_types:
+                    continue
                 self._group._inner.process_proposal(msg, Sender(0, SenderType.EXTERNAL))
             except Exception:
-                pass
+                continue
         try:
             if not self._signing_key_der:
                 return None
@@ -165,12 +208,31 @@ class DaveSession:
         if self._hpke_private_key is None:
             raise ValueError("No HPKE private key; cannot process welcome")
         if self._crypto is None:
-            from sorrydave.mls.group_state import get_dave_crypto_provider
-
             self._crypto = get_dave_crypto_provider()
         self._group = join_from_welcome(welcome_bytes, self._hpke_private_key, self._crypto)
+        if self._external_sender is not None:
+            validate_group_external_sender(
+                self._group,
+                self._external_sender.signature_key,
+                self._external_sender.credential_type,
+                self._external_sender.identity,
+            )
         self._refresh_receive_ratchets()
         self._refresh_send_ratchet()
+
+    def handle_prepare_transition(self, protocol_version: int, transition_id: int) -> None:
+        """
+        Process opcode 21 (Prepare Transition). When transition_id is 0, execute immediately.
+
+        Per protocol sole member reset: "Upon receiving dave_protocol_prepare_transition
+        with transition_id = 0, the client immediately executes the transition."
+
+        Args:
+            protocol_version (int): Protocol version for the transition.
+            transition_id (int): Transition ID. 0 = execute immediately (e.g. sole member reset).
+        """
+        if transition_id == 0:
+            self.execute_transition(0)
 
     def execute_transition(self, transition_id: int) -> None:
         """

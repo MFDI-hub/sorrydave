@@ -13,7 +13,7 @@ from sorrydave.crypto.cipher import (
 )
 from sorrydave.crypto.ratchet import KeyRatchet
 from sorrydave.exceptions import DecryptionError
-from sorrydave.media.codecs import get_unencrypted_ranges
+from sorrydave.media.codecs import get_unencrypted_ranges, transform_av1_frame_for_encrypt
 from sorrydave.types import ProtocolSupplementalData, UnencryptedRange
 
 # Minimum footer: 8 tag + 1 nonce byte + 0 ranges + 1 size + 2 magic = 12
@@ -23,6 +23,9 @@ MIN_SUPPLEMENTAL = 8 + 1 + 0 + 1 + 2
 H26X_START_3 = b"\x00\x00\x01"
 H26X_START_4 = b"\x00\x00\x00\x01"
 H26X_RETRY_MAX = 10
+
+# Silence packet: SFU-synthesized 3-byte sequence; decryptor passes through per protocol.md
+SILENCE_PACKET = bytes((0xF8, 0xFF, 0xFE))
 
 
 def _replace_3byte_start_with_4byte(data: bytes) -> bytes:
@@ -193,6 +196,7 @@ class FrameEncryptor:
         sender_user_id: int,
         ratchet: KeyRatchet,
         nonce_supplier: Union[Callable[[], int], None] = None,
+        passthrough: bool = False,
     ):
         """
         Initialize the frame encryptor.
@@ -201,26 +205,35 @@ class FrameEncryptor:
             sender_user_id (int): Sender user ID (e.g. Discord snowflake).
             ratchet (KeyRatchet): Key ratchet for per-generation keys.
             nonce_supplier (Union[Callable[[], int], None]): Optional nonce source for tests.
+            passthrough (bool): If True, encrypt() returns frames unchanged (non-E2EE mode).
         """
         self._sender_user_id = sender_user_id
         self._ratchet = ratchet
         self._nonce = 0
+        self._generation_wrap_count = 0  # increments when nonce wraps 0xFFFFFFFF -> 0
         self._nonce_supplier = nonce_supplier  # for tests
+        self._passthrough = passthrough
 
-    def _next_nonce(self) -> int:
+    def _next_nonce_and_generation(self) -> tuple[int, int]:
         """
-        Return next 32-bit nonce (from supplier if set, else monotonic counter).
+        Return next 32-bit nonce and its generation (from supplier if set, else monotonic).
+
+        Generation continues past 255 when nonce wraps (protocol: "continue incrementing the generation").
 
         Returns:
-            int: Next nonce value.
+            tuple[int, int]: (nonce_32, generation).
         """
         if self._nonce_supplier is not None:
-            return self._nonce_supplier()
+            n = self._nonce_supplier()
+            gen = (n >> 24) & 0xFF
+            return n, gen
         n = self._nonce
         self._nonce += 1
         if self._nonce > 0xFFFFFFFF:
-            self._nonce = 0  # wrap; generation will advance in ratchet
-        return n
+            self._nonce = 0
+            self._generation_wrap_count += 1
+        generation = (n >> 24) + self._generation_wrap_count * 256
+        return n, generation
 
     def encrypt(self, encoded_frame: bytes, codec: str) -> bytes:
         """
@@ -239,14 +252,17 @@ class FrameEncryptor:
         Raises:
             DecryptionError: If supplemental too large or H26x retry limit exceeded.
         """
+        if self._passthrough:
+            return encoded_frame
         codec_upper = (codec or "").strip().upper()
-        ranges = get_unencrypted_ranges(encoded_frame, codec)
         frame = encoded_frame
+        if codec_upper == "AV1":
+            frame = transform_av1_frame_for_encrypt(frame)
+        ranges = get_unencrypted_ranges(frame, codec)
         if codec_upper in ("H264", "H.264", "H265", "H265/HEVC", "HEVC"):
-            frame, ranges = _apply_h26x_start_code_expansion(encoded_frame, ranges)
+            frame, ranges = _apply_h26x_start_code_expansion(frame, ranges)
         for _ in range(H26X_RETRY_MAX):
-            nonce_32 = self._next_nonce()
-            generation = (nonce_32 >> 24) & 0xFF
+            nonce_32, generation = self._next_nonce_and_generation()
             key = self._ratchet.get_key_for_generation(generation)
             interleaved, tag_8 = encrypt_interleaved(key, nonce_32, frame, ranges)
             footer_body = _build_supplemental_footer(tag_8, nonce_32, ranges)
@@ -270,21 +286,45 @@ class FrameDecryptor:
     Tracks used (sender_id, nonce) to reject reuse.
     """
 
-    def __init__(self, sender_user_id: int, ratchet: KeyRatchet):
+    def __init__(self, sender_user_id: int, ratchet: KeyRatchet, passthrough: bool = False):
         """
         Initialize the frame decryptor.
 
         Args:
             sender_user_id (int): Sender user ID (for nonce reuse tracking).
             ratchet (KeyRatchet): Key ratchet for this sender.
+            passthrough (bool): If True, pass through non-protocol and silence frames (non-E2EE mode).
         """
         self._sender_user_id = sender_user_id
         self._ratchet = ratchet
         self._used_nonces: set[tuple[int, int]] = set()
+        self._passthrough = passthrough
+        # For nonce wrap: generation continues past 255 (protocol)
+        self._wrap_count = 0
+        self._seen_high_nonce = False  # True once we've seen nonce >= 0xFF000000
+
+    def _generation_from_nonce(self, nonce_32: int) -> int:
+        """
+        Compute generation from 32-bit nonce (read-only; does not mutate state).
+        """
+        msb = (nonce_32 >> 24) & 0xFF
+        if self._wrap_count > 0:
+            return self._wrap_count * 256 + msb
+        if self._seen_high_nonce and msb == 0:
+            return 256
+        return msb
+
+    def _apply_nonce_seen(self, nonce_32: int) -> None:
+        """Update wrap state after successful decryption."""
+        if nonce_32 >= 0xFF000000:
+            self._seen_high_nonce = True
+        if self._seen_high_nonce and ((nonce_32 >> 24) & 0xFF) == 0:
+            self._wrap_count += 1
+            self._seen_high_nonce = False
 
     def decrypt(self, protocol_frame: bytes) -> bytes:
         """
-        Parse footer, get key for generation (from nonce MSB), verify tag, decrypt.
+        Parse footer, get key for generation (from nonce MSB, with wrap), verify tag, decrypt.
 
         Args:
             protocol_frame (bytes): Full DAVE protocol frame (ciphertext + footer).
@@ -295,26 +335,53 @@ class FrameDecryptor:
         Raises:
             DecryptionError: On nonce reuse or GCM verification failure.
         """
+        if len(protocol_frame) == 3 and protocol_frame == SILENCE_PACKET:
+            return protocol_frame
+        if self._passthrough and not protocol_frame_check(protocol_frame):
+            return protocol_frame
         suppl, interleaved_end = _parse_supplemental_from_tail(protocol_frame)
         interleaved = protocol_frame[:interleaved_end]
         if (self._sender_user_id, suppl.nonce_32) in self._used_nonces:
             raise DecryptionError("Nonce reuse")
-        generation = (suppl.nonce_32 >> 24) & 0xFF
-        key = self._ratchet.get_key_for_generation(generation)
-        plain = decrypt_interleaved(
-            key,
-            suppl.nonce_32,
-            interleaved,
-            suppl.tag_8,
-            suppl.unencrypted_ranges,
-        )
+        msb = (suppl.nonce_32 >> 24) & 0xFF
+        generation = self._generation_from_nonce(suppl.nonce_32)
+        try:
+            key = self._ratchet.get_key_for_generation(generation)
+            plain = decrypt_interleaved(
+                key,
+                suppl.nonce_32,
+                interleaved,
+                suppl.tag_8,
+                suppl.unencrypted_ranges,
+            )
+        except (DecryptionError, ValueError):
+            # Out-of-order: late frame from previous epoch (e.g. nonce 0xFF... after wrap)
+            if self._wrap_count > 0 and msb == 255:
+                alt_generation = (self._wrap_count - 1) * 256 + 255
+                try:
+                    key = self._ratchet.get_key_for_generation(alt_generation)
+                    plain = decrypt_interleaved(
+                        key,
+                        suppl.nonce_32,
+                        interleaved,
+                        suppl.tag_8,
+                        suppl.unencrypted_ranges,
+                    )
+                except (DecryptionError, ValueError):
+                    raise
+            else:
+                raise
+        self._apply_nonce_seen(suppl.nonce_32)
         self._used_nonces.add((self._sender_user_id, suppl.nonce_32))
         return plain
 
 
 def protocol_frame_check(frame: bytes) -> bool:
     """
-    Check if frame passes minimal DAVE protocol structure (magic, size).
+    Check if frame passes full DAVE protocol structure per protocol.md.
+
+    Validates: minimum size, magic 0xFAFA, supplemental size, ULEB128 nonce,
+    ULEB128 unencrypted ranges (ordered, distinct, non-overlapping, within bounds).
 
     Used by passthrough logic to detect DAVE frames.
 
@@ -322,7 +389,7 @@ def protocol_frame_check(frame: bytes) -> bool:
         frame (bytes): Potential protocol frame.
 
     Returns:
-        bool: True if magic and supplemental size look valid.
+        bool: True if frame passes all checks.
     """
     if len(frame) < MIN_SUPPLEMENTAL:
         return False
@@ -330,5 +397,30 @@ def protocol_frame_check(frame: bytes) -> bool:
         return False
     suppl_size = frame[-3]
     if suppl_size < 11 or suppl_size >= len(frame):
+        return False
+    suppl_content_start = len(frame) - suppl_size
+    if suppl_content_start < 0:
+        return False
+    body = frame[suppl_content_start : len(frame) - 3]
+    if len(body) < 8:
+        return False
+    try:
+        offset = 8
+        nonce_32, offset = uleb128_decode(body, offset)
+        if nonce_32 > 0xFFFFFFFF:
+            return False
+        interleaved_len = suppl_content_start
+        prev_end = 0
+        while offset < len(body):
+            off_val, offset = uleb128_decode(body, offset)
+            if offset > len(body):
+                return False
+            len_val, offset = uleb128_decode(body, offset)
+            if off_val < prev_end:
+                return False
+            if off_val + len_val > interleaved_len:
+                return False
+            prev_end = off_val + len_val
+    except ValueError:
         return False
     return True

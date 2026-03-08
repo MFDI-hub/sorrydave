@@ -1,15 +1,22 @@
 """
-DAVE Voice Gateway opcode parsing and building (opcodes 22, 25-31).
-Binary opcodes 25-30; JSON opcodes 22, 31. No I/O; consumes/produces bytes only.
+DAVE Voice Gateway opcode parsing and building (opcodes 0, 4, 11, 13, 21-24, 25-31).
+Binary opcodes 25-30; JSON opcodes 0, 4, 11, 13, 21, 22, 23, 24, 31. No I/O; consumes/produces bytes only.
 """
 
 import json
 import struct
 from dataclasses import dataclass
-from typing import Union
+from typing import Any, Union
 
 # Opcode values per protocol.md
+OPCODE_IDENTIFY = 0
+OPCODE_SELECT_PROTOCOL_ACK = 4
+OPCODE_CLIENTS_CONNECT = 11
+OPCODE_CLIENT_DISCONNECT = 13
+OPCODE_PREPARE_TRANSITION = 21
 OPCODE_EXECUTE_TRANSITION = 22
+OPCODE_READY_FOR_TRANSITION = 23
+OPCODE_PREPARE_EPOCH = 24
 OPCODE_EXTERNAL_SENDER_PACKAGE = 25
 OPCODE_KEY_PACKAGE = 26
 OPCODE_PROPOSALS = 27
@@ -227,6 +234,29 @@ def parse_proposals(data: bytes) -> ProposalsMessage:
         return ProposalsMessage(sequence_number=seq, operation_type=1, proposal_refs=refs)
 
 
+def split_proposal_messages_vector(vector_payload: bytes) -> list[bytes]:
+    """
+    Split MLS proposal_messages vector payload into individual MLSMessage bytes.
+
+    Each element is opaque<V> (varint length + bytes).
+
+    Args:
+        vector_payload (bytes): Raw vector content (no outer length prefix).
+
+    Returns:
+        list[bytes]: List of MLSMessage byte strings.
+    """
+    messages = []
+    off = 0
+    while off < len(vector_payload):
+        try:
+            msg_bytes, off = _read_opaque_varint(vector_payload, off)
+            messages.append(msg_bytes)
+        except ValueError:
+            break
+    return messages
+
+
 def parse_announce_commit(data: bytes) -> tuple[int, bytes]:
     """
     Parse opcode 29: transition_id (uint16) + MLSMessage commit.
@@ -346,7 +376,115 @@ def _write_opaque_varint(data: bytes) -> bytes:
     return prefix + data
 
 
-# --- JSON opcodes (22, 31) ---
+# --- JSON opcodes (0, 4, 11, 13, 21, 22, 23, 24, 31) ---
+
+
+def _parse_json_op(payload: bytes) -> dict[str, Any]:
+    """Decode UTF-8 JSON and return the root object. Raises ValueError on failure."""
+    try:
+        obj = json.loads(payload.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ValueError("Invalid JSON payload") from e
+    if not isinstance(obj, dict):
+        raise ValueError("Payload must be a JSON object")
+    return obj
+
+
+def build_identify(max_dave_protocol_version: int = 1, **d_extra: object) -> bytes:
+    """
+    Build opcode 0 (Identify) JSON payload. Client sends to server.
+
+    Args:
+        max_dave_protocol_version (int): Maximum supported DAVE protocol version.
+        **d_extra: Additional keys for the "d" object (e.g. server_id, user_id, session_id).
+
+    Returns:
+        bytes: UTF-8 JSON payload.
+    """
+    d = {"max_dave_protocol_version": max_dave_protocol_version, **d_extra}
+    obj = {"op": OPCODE_IDENTIFY, "d": d}
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+
+
+def parse_select_protocol_ack(payload: bytes) -> int:
+    """
+    Parse opcode 4 (Select Protocol Ack) JSON payload. Server sends to client.
+
+    Returns:
+        int: dave_protocol_version (initial DAVE protocol version for the session).
+    """
+    obj = _parse_json_op(payload)
+    d = obj.get("d")
+    if not isinstance(d, dict):
+        raise ValueError("select_protocol_ack must have 'd' object")
+    v = d.get("dave_protocol_version")
+    if v is None:
+        raise ValueError("dave_protocol_version required")
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        raise ValueError("dave_protocol_version must be an integer") from None
+    return v
+
+
+def parse_clients_connect(payload: bytes) -> list[str]:
+    """
+    Parse opcode 11 (Clients Connect) JSON payload. Server sends to client.
+
+    Returns:
+        list[str]: user_ids (Discord snowflake user IDs as strings).
+    """
+    obj = _parse_json_op(payload)
+    d = obj.get("d")
+    if not isinstance(d, dict):
+        raise ValueError("clients_connect must have 'd' object")
+    user_ids = d.get("user_ids")
+    if not isinstance(user_ids, list):
+        raise ValueError("user_ids must be a list")
+    if not all(isinstance(u, str) for u in user_ids):
+        raise ValueError("user_ids must be strings")
+    return user_ids
+
+
+def parse_client_disconnect(payload: bytes) -> str:
+    """
+    Parse opcode 13 (Client Disconnect) JSON payload. Server sends to client.
+
+    Returns:
+        str: user_id (Discord snowflake user ID that disconnected).
+    """
+    obj = _parse_json_op(payload)
+    d = obj.get("d")
+    if not isinstance(d, dict):
+        raise ValueError("client_disconnect must have 'd' object")
+    user_id = d.get("user_id")
+    if not isinstance(user_id, str):
+        raise ValueError("user_id must be a string")
+    return user_id
+
+
+def parse_prepare_transition(payload: bytes) -> tuple[int, int]:
+    """
+    Parse opcode 21 (Prepare Transition) JSON payload. Server sends to client.
+
+    Returns:
+        tuple[int, int]: (protocol_version, transition_id). transition_id 0 = execute immediately.
+    """
+    obj = _parse_json_op(payload)
+    d = obj.get("d")
+    if not isinstance(d, dict):
+        raise ValueError("prepare_transition must have 'd' object")
+    pv = d.get("protocol_version")
+    tid = d.get("transition_id")
+    if pv is None or tid is None:
+        raise ValueError("protocol_version and transition_id required")
+    try:
+        pv, tid = int(pv), int(tid)
+    except (TypeError, ValueError):
+        raise ValueError("protocol_version and transition_id must be integers") from None
+    if not 0 <= tid <= 0xFFFF:
+        raise ValueError("transition_id must be uint16")
+    return pv, tid
 
 
 def parse_execute_transition(payload: bytes) -> int:
@@ -381,6 +519,44 @@ def parse_execute_transition(payload: bytes) -> int:
     if not 0 <= tid <= 0xFFFF:
         raise ValueError("transition_id must be uint16")
     return tid
+
+
+def build_ready_for_transition(transition_id: int) -> bytes:
+    """
+    Build opcode 23 (Ready For Transition) JSON payload. Client sends to server.
+
+    Args:
+        transition_id (int): Transition ID (uint16) the client is ready to execute.
+
+    Returns:
+        bytes: UTF-8 JSON payload.
+    """
+    if not 0 <= transition_id <= 0xFFFF:
+        raise ValueError("transition_id must be uint16")
+    obj = {"op": OPCODE_READY_FOR_TRANSITION, "d": {"transition_id": transition_id}}
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+
+
+def parse_prepare_epoch(payload: bytes) -> tuple[int, int]:
+    """
+    Parse opcode 24 (Prepare Epoch) JSON payload. Server sends to client.
+
+    Returns:
+        tuple[int, int]: (protocol_version, epoch). epoch 1 = new MLS group to be created.
+    """
+    obj = _parse_json_op(payload)
+    d = obj.get("d")
+    if not isinstance(d, dict):
+        raise ValueError("prepare_epoch must have 'd' object")
+    pv = d.get("protocol_version")
+    epoch = d.get("epoch")
+    if pv is None or epoch is None:
+        raise ValueError("protocol_version and epoch required")
+    try:
+        pv, epoch = int(pv), int(epoch)
+    except (TypeError, ValueError):
+        raise ValueError("protocol_version and epoch must be integers") from None
+    return pv, epoch
 
 
 def build_invalid_commit_welcome(transition_id: int) -> bytes:

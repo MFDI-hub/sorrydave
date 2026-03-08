@@ -93,7 +93,8 @@ class KeyRatchet:
         Returns:
             bytes: 16-byte key.
         """
-        info = RATCHET_LABEL + generation.to_bytes(4, "little")
+        # Generation can exceed 255 after nonce wrap; use 4-byte little-endian
+        info = RATCHET_LABEL + (generation & 0xFFFFFFFF).to_bytes(4, "little")
         hkdf = HKDFExpand(
             algorithm=hashes.SHA256(),
             length=KEY_LENGTH,

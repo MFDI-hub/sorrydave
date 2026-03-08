@@ -5,6 +5,7 @@ Creates group, key package, processes commit/welcome, exports sender base secret
 
 from __future__ import annotations
 
+import struct
 from typing import TYPE_CHECKING, Union
 
 from sorrydave.exceptions import InvalidCommitError
@@ -17,6 +18,41 @@ if TYPE_CHECKING:
 DAVE_MLS_CIPHERSUITE_ID = 2
 EXPORTER_LABEL = b"Discord Secure Frames v0"
 EXPORTER_LENGTH = 16
+EXTENSION_TYPE_EXTERNAL_SENDERS = 0x0002
+
+
+def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
+    """Read MLS-style varint from data at offset. Returns (value, new_offset)."""
+    if offset >= len(data):
+        raise ValueError("Varint truncated")
+    first = data[offset]
+    prefix = first >> 6
+    if prefix == 0b00:
+        return first & 0x3F, offset + 1
+    if prefix == 0b01:
+        if offset + 2 > len(data):
+            raise ValueError("Varint truncated")
+        value = ((first & 0x3F) << 8) | data[offset + 1]
+        return value, offset + 2
+    if prefix == 0b10:
+        if offset + 4 > len(data):
+            raise ValueError("Varint truncated")
+        value = (
+            ((first & 0x3F) << 24)
+            | (data[offset + 1] << 16)
+            | (data[offset + 2] << 8)
+            | data[offset + 3]
+        )
+        return value, offset + 4
+    raise ValueError("Varint overflow")
+
+
+def _read_opaque_varint(data: bytes, offset: int) -> tuple[bytes, int]:
+    """Read opaque<V>: varint length then that many bytes."""
+    length, pos = _read_varint(data, offset)
+    if pos + length > len(data):
+        raise ValueError("Opaque truncated")
+    return data[pos : pos + length], pos + length
 
 
 def get_dave_crypto_provider() -> DefaultCryptoProvider:
@@ -140,21 +176,154 @@ def create_key_package(
     return (kp.serialize(), hpke_private, sig_private_der)
 
 
+def _write_varint(x: int) -> bytes:
+    """RFC 9420 variable-length integer encoding."""
+    if x < 0x40:
+        return bytes([x])
+    if x < 0x4000:
+        return (x | 0x4000).to_bytes(2, "big")
+    if x <= 0x3FFFFFFF:
+        return (x | 0x80000000).to_bytes(4, "big")
+    raise ValueError("integer too large for RFC 9420 varint")
+
+
+def _write_opaque_varint(data: bytes) -> bytes:
+    """Encode opaque<V>: varint length prefix + data."""
+    return _write_varint(len(data)) + data
+
+
+def serialize_external_senders_extension(
+    signature_key: bytes,
+    credential_type: int,
+    identity: bytes,
+) -> bytes:
+    """Serialize the external_senders group extension for the MLS GroupContext.
+    Returns the raw bytes for the GroupContext.extensions field (inner content
+    of Extension extensions<V>, without the outer vector length prefix).
+    Wire format per RFC 9420 section 12.1.8.1:
+        Extension { uint16 extension_type; opaque extension_data<V>; }
+        ExternalSendersExtension { ExternalSender external_senders<V>; }
+        ExternalSender { SignaturePublicKey signature_key; Credential credential; }
+        Credential { uint16 credential_type; opaque identity<V>; }
+    """
+    ext_sender = _write_opaque_varint(signature_key)
+    ext_sender += struct.pack("!H", credential_type)
+    ext_sender += _write_opaque_varint(identity)
+    ext_senders_list = _write_opaque_varint(ext_sender)
+    extension = struct.pack("!H", EXTENSION_TYPE_EXTERNAL_SENDERS)
+    extension += _write_opaque_varint(ext_senders_list)
+    return extension
+
+
+def get_external_senders_from_group(group: Group) -> list[tuple[bytes, int, bytes]]:
+    """
+    Parse GroupContext.extensions and return list of (signature_key, credential_type, identity)
+    for the external_senders extension (type 0x0002).
+
+    Returns:
+        list[tuple[bytes, int, bytes]]: Empty if no external senders extension or parse error.
+    """
+    try:
+        inner = group._inner
+        gc = inner._group_context
+        if gc is None or not gc.extensions:
+            return []
+    except Exception:
+        return []
+    data = gc.extensions if isinstance(gc.extensions, bytes) else b""
+    if not data:
+        return []
+    try:
+        n_ext, pos = _read_varint(data, 0)
+        result: list[tuple[bytes, int, bytes]] = []
+        for _ in range(n_ext):
+            if pos + 2 > len(data):
+                break
+            ext_type = struct.unpack("!H", data[pos : pos + 2])[0]
+            pos += 2
+            ext_data, pos = _read_opaque_varint(data, pos)
+            if ext_type != EXTENSION_TYPE_EXTERNAL_SENDERS:
+                continue
+            ext_senders_list, off = _read_opaque_varint(ext_data, 0)
+            if off != len(ext_data):
+                continue
+            while off < len(ext_senders_list):
+                sig_key, off = _read_opaque_varint(ext_senders_list, off)
+                if off + 2 > len(ext_senders_list):
+                    break
+                cred_type = struct.unpack("!H", ext_senders_list[off : off + 2])[0]
+                off += 2
+                identity, off = _read_opaque_varint(ext_senders_list, off)
+                result.append((sig_key, cred_type, identity))
+        return result
+    except Exception:
+        return []
+
+
+def validate_group_external_sender(
+    group: Group,
+    expected_signature_key: bytes,
+    expected_credential_type: int,
+    expected_identity: bytes,
+) -> None:
+    """
+    Verify the group has exactly one external sender matching the voice gateway package.
+
+    Raises:
+        InvalidCommitError: If not exactly one external sender or no match.
+    """
+    senders = get_external_senders_from_group(group)
+    if len(senders) != 1:
+        raise InvalidCommitError(f"Group must have exactly one external sender; got {len(senders)}")
+    sig_key, cred_type, identity = senders[0]
+    if (
+        sig_key != expected_signature_key
+        or cred_type != expected_credential_type
+        or identity != expected_identity
+    ):
+        raise InvalidCommitError("Group external sender does not match voice gateway package")
+
+
+def _inject_group_extensions(group: Group, extensions_bytes: bytes) -> None:
+    """Replace the GroupContext extensions on an epoch-0 group.
+    At epoch 0, KeySchedule.from_epoch_secret does not bind the group context
+    into the key derivation (only the random epoch secret is used), so swapping
+    the GroupContext with updated extensions is safe before any commits.
+    """
+    from rfc9420.protocol.data_structures import GroupContext
+
+    inner = group._inner
+    old_gc = inner._group_context
+    if old_gc is None:
+        return
+    new_gc = GroupContext(
+        group_id=old_gc.group_id,
+        epoch=old_gc.epoch,
+        tree_hash=old_gc.tree_hash,
+        confirmed_transcript_hash=old_gc.confirmed_transcript_hash,
+        extensions=extensions_bytes,
+        version=old_gc.version,
+        cipher_suite_id=old_gc.cipher_suite_id,
+    )
+    inner._group_context = new_gc
+    if inner._key_schedule is not None:
+        inner._key_schedule._group_context = new_gc
+
+
 def create_group(
     group_id: bytes,
     key_package_bytes: bytes,
     crypto: Union[DefaultCryptoProvider, None] = None,
+    external_sender_signature_key: Union[bytes, None] = None,
+    external_sender_credential_type: int = 1,
+    external_sender_identity: Union[bytes, None] = None,
 ) -> Group:
     """
     Create a new MLS group with the given key package (single member).
 
-    Args:
-        group_id (bytes): Group identifier.
-        key_package_bytes (bytes): Serialized KeyPackage of the initial member.
-        crypto (Union[DefaultCryptoProvider, None]): Crypto provider; uses get_dave_crypto_provider() if None.
-
-    Returns:
-        Group: rfc9420 Group instance.
+    When external sender parameters are provided, the group extensions will
+    include the required external_senders extension (type 0x0002) per RFC 9420
+    section 12.1.8.1.  This is mandatory for the DAVE protocol.
     """
     if crypto is None:
         crypto = get_dave_crypto_provider()
@@ -162,7 +331,17 @@ def create_group(
     from rfc9420.protocol.key_packages import KeyPackage
 
     kp = KeyPackage.deserialize(key_package_bytes)
-    return Group.create(group_id, kp, crypto)
+    group = Group.create(group_id, kp, crypto)
+
+    if external_sender_signature_key is not None and external_sender_identity is not None:
+        extensions_bytes = serialize_external_senders_extension(
+            signature_key=external_sender_signature_key,
+            credential_type=external_sender_credential_type,
+            identity=external_sender_identity,
+        )
+        _inject_group_extensions(group, extensions_bytes)
+
+    return group
 
 
 def join_from_welcome(
@@ -208,9 +387,47 @@ def export_sender_base_secret(group: Group, sender_user_id: int) -> bytes:
     return result
 
 
+def _check_no_duplicate_credentials(group: Group) -> None:
+    """
+    Raise InvalidCommitError if the group tree has duplicate basic credentials (user IDs).
+
+    Per DAVE client commit validity: "The resulting group includes a duplicated basic
+    credential (i.e. the big-endian user ID snowflake) between two or more leaf nodes."
+    """
+    inner = group._inner
+    tree = getattr(inner, "_ratchet_tree", None)
+    if tree is None:
+        return
+    seen: set[bytes] = set()
+    n = inner.get_member_count()
+    for leaf_index in range(n):
+        try:
+            node = tree.get_node(leaf_index * 2)
+            if node is None or not getattr(node, "leaf_node", None):
+                continue
+            leaf = node.leaf_node
+            cred = getattr(leaf, "credential", None)
+            if cred is None:
+                continue
+            identity = getattr(cred, "identity", None)
+            if identity is None or len(identity) < 8:
+                continue
+            id_bytes = identity[:8]
+            if id_bytes in seen:
+                raise InvalidCommitError("Duplicate basic credential in group tree")
+            seen.add(id_bytes)
+        except InvalidCommitError:
+            raise
+        except Exception:
+            continue
+
+
 def apply_commit(group: Group, commit_mls_plaintext_bytes: bytes, sender_leaf_index: int) -> None:
     """
     Apply a received commit to the group.
+
+    Per DAVE client commit validity, raises InvalidCommitError if the resulting
+    group would have duplicate basic credentials (user IDs).
 
     Args:
         group (Group): rfc9420 Group instance.
@@ -218,7 +435,7 @@ def apply_commit(group: Group, commit_mls_plaintext_bytes: bytes, sender_leaf_in
         sender_leaf_index (int): Leaf index of the commit sender.
 
     Raises:
-        InvalidCommitError: If commit application fails.
+        InvalidCommitError: If commit application fails or duplicate credentials.
     """
     try:
         from rfc9420.protocol.data_structures import Sender, SenderType
@@ -227,6 +444,9 @@ def apply_commit(group: Group, commit_mls_plaintext_bytes: bytes, sender_leaf_in
         msg = MLSPlaintext.deserialize(commit_mls_plaintext_bytes)
         sender = Sender(sender_leaf_index, SenderType.MEMBER)
         group.apply_commit(msg, sender.sender)
+        _check_no_duplicate_credentials(group)
+    except InvalidCommitError:
+        raise
     except Exception as e:
         raise InvalidCommitError("Failed to apply commit") from e
 

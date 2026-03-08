@@ -189,6 +189,26 @@ def _leb128_decode(data: bytes, offset: int) -> tuple[int, int]:
     return val, pos
 
 
+def _leb128_encode_minimal(value: int) -> bytes:
+    """
+    Encode nonnegative integer as minimal LEB128 (no padding).
+
+    Args:
+        value (int): Nonnegative integer.
+
+    Returns:
+        bytes: Minimal LEB128 encoding.
+    """
+    if value < 0:
+        raise ValueError("LEB128 requires nonnegative integer")
+    buf = []
+    while value >= 0x80:
+        buf.append(0x80 | (value & 0x7F))
+        value >>= 7
+    buf.append(value & 0x7F)
+    return bytes(buf)
+
+
 def _av1_unencrypted_ranges(frame: bytes) -> list[UnencryptedRange]:
     """
     AV1: OBU header, optional extension, optional LEB128 size unencrypted; payload encrypted.
@@ -229,3 +249,69 @@ def _av1_unencrypted_ranges(frame: bytes) -> list[UnencryptedRange]:
         ranges.append(UnencryptedRange(offset=obu_start, length=unencrypted_len))
         pos = pos + payload_len if obu_has_size_field else n
     return ranges
+
+
+def transform_av1_frame_for_encrypt(frame: bytes) -> bytes:
+    """
+    Transform AV1 frame for DAVE encryption (protocol.md AV1 section).
+
+    - Drops OBU types 2 (TEMPORAL_DELIMITER), 8 (TILE_LIST), 15 (PADDING).
+    - Reduces padded LEB128 OBU sizes to minimal encoding.
+    - For the last OBU: sets obu_has_size_field to 0 and removes LEB128 size.
+
+    Args:
+        frame (bytes): Raw AV1 frame (OBU stream).
+
+    Returns:
+        bytes: Transformed frame suitable for encryption and supplemental footer.
+    """
+    n = len(frame)
+    pos = 0
+    # (header_byte, ext_off, ext_len, payload_off, payload_len, had_size_field)
+    obus: list[tuple[int, int, int, int, int, bool]] = []
+    while pos < n:
+        if pos + 1 > n:
+            break
+        obu_header = frame[pos]
+        obu_type = (obu_header >> 3) & 0x0F
+        obu_has_extension = (obu_header & 4) != 0
+        obu_has_size_field = (obu_header & 2) != 0
+        pos += 1
+        ext_off = pos
+        ext_len = 1 if obu_has_extension else 0
+        if obu_has_extension and pos + 1 <= n:
+            pos += 1
+        payload_len = 0
+        if obu_has_size_field and pos < n:
+            payload_len, size_end = _leb128_decode(frame, pos)
+            pos = size_end
+        payload_off = pos
+        if obu_has_size_field:
+            pos = pos + payload_len
+        else:
+            payload_len = n - payload_off
+            pos = n
+        if obu_type in AV1_OBU_DROP_TYPES:
+            continue
+        obus.append((obu_header, ext_off, ext_len, payload_off, payload_len, obu_has_size_field))
+    if not obus:
+        return frame
+    out: list[bytes] = []
+    for i, (header_byte, ext_off, ext_len, payload_off, actual_payload_len, _had_size) in enumerate(
+        obus
+    ):
+        is_last = i == len(obus) - 1
+        payload = frame[payload_off : payload_off + actual_payload_len]
+        if is_last:
+            new_header = header_byte & 0xFD
+            out.append(bytes([new_header]))
+            if ext_len:
+                out.append(frame[ext_off : ext_off + ext_len])
+            out.append(payload)
+        else:
+            out.append(bytes([header_byte]))
+            if ext_len:
+                out.append(frame[ext_off : ext_off + ext_len])
+            out.append(_leb128_encode_minimal(actual_payload_len))
+            out.append(payload)
+    return b"".join(out)
