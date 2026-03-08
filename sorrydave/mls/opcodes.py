@@ -218,7 +218,7 @@ def parse_proposals(data: bytes) -> ProposalsMessage:
             operation_type=0,
             proposal_messages=[vector_bytes],
         )
-    elif op_type == 1:  # revoke
+    else:  # revoke (op_type == 1, validated above)
         refs = []
         off = 0
         while off < len(vector_bytes):

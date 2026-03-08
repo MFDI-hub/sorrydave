@@ -31,4 +31,4 @@ __all__ = [
     "displayable_code",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
