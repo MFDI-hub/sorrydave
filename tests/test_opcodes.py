@@ -5,13 +5,8 @@ import struct
 
 import pytest
 from sorrydave.mls.opcodes import (
-    OPCODE_ANNOUNCE_COMMIT,
-    OPCODE_EXECUTE_TRANSITION,
-    OPCODE_EXTERNAL_SENDER_PACKAGE,
     OPCODE_INVALID_COMMIT_WELCOME,
     OPCODE_KEY_PACKAGE,
-    OPCODE_PROPOSALS,
-    OPCODE_WELCOME,
     build_commit_welcome,
     build_invalid_commit_welcome,
     build_key_package_message,
@@ -33,12 +28,15 @@ def _varint(n: int) -> bytes:
     Returns:
         bytes: Varint-encoded bytes.
     """
-    buf = []
-    while n >= 0x80:
-        buf.append(0x80 | (n & 0x7F))
-        n >>= 7
-    buf.append(n & 0x7F)
-    return bytes(buf)
+    if n < 0:
+        raise ValueError("varint requires nonnegative int")
+    if n <= 0x3F:
+        return bytes([n])
+    if n <= 0x3FFF:
+        return bytes([0x40 | (n >> 8), n & 0xFF])
+    if n <= 0x3FFFFFFF:
+        return bytes([0x80 | ((n >> 24) & 0x3F), (n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF])
+    raise ValueError("value too large for MLS varint")
 
 
 # --- Opcode 22 (Execute Transition) ---
@@ -111,7 +109,7 @@ def test_parse_external_sender_package_minimal():
     # seq=0, opcode=25, sig_key length 2 + 2 bytes, cred_type=1, identity length 8 + 8 bytes
     sig_key = b"\x01\x02"
     identity = b"\x00\x00\x00\x00\x00\x00\x00\x01"
-    payload = struct.pack("<HB", 0, 25) + _varint(2) + sig_key + struct.pack("!H", 1) + _varint(8) + identity
+    payload = struct.pack("!HB", 0, 25) + _varint(2) + sig_key + struct.pack("!H", 1) + _varint(8) + identity
     p = parse_external_sender_package(payload)
     assert p.sequence_number == 0
     assert p.signature_key == sig_key
@@ -121,7 +119,7 @@ def test_parse_external_sender_package_minimal():
 
 def test_parse_external_sender_package_wrong_opcode():
     """parse_external_sender_package raises when opcode is not 25."""
-    payload = struct.pack("<HB", 0, 26) + _varint(0) + struct.pack("!H", 1) + _varint(0)
+    payload = struct.pack("!HB", 0, 26) + _varint(0) + struct.pack("!H", 1) + _varint(0)
     with pytest.raises(ValueError, match="Expected opcode 25"):
         parse_external_sender_package(payload)
 
@@ -152,7 +150,7 @@ def test_build_key_package_message():
 def test_parse_proposals_append_minimal():
     """parse_proposals with operation_type 0 (append) returns proposal_messages list."""
     # seq=1, opcode=27, op_type=0 (append), one proposal: len 3 + "abc"
-    payload = struct.pack("<HBB", 1, 27, 0) + _varint(3) + b"abc"
+    payload = struct.pack("!HBB", 1, 27, 0) + _varint(3) + b"abc"
     p = parse_proposals(payload)
     assert p.sequence_number == 1
     assert p.operation_type == 0
@@ -163,7 +161,8 @@ def test_parse_proposals_append_minimal():
 def test_parse_proposals_revoke():
     """parse_proposals with operation_type 1 (revoke) returns proposal_refs list."""
     ref = b"\x00\x01\x02"
-    payload = struct.pack("<HBB", 2, 27, 1) + _varint(3) + ref
+    refs_vector = _varint(len(ref)) + ref
+    payload = struct.pack("!HBB", 2, 27, 1) + _varint(len(refs_vector)) + refs_vector
     p = parse_proposals(payload)
     assert p.operation_type == 1
     assert p.proposal_refs == [ref]
@@ -172,14 +171,14 @@ def test_parse_proposals_revoke():
 
 def test_parse_proposals_wrong_opcode():
     """parse_proposals raises when opcode is not 27."""
-    payload = struct.pack("<HBB", 0, 28, 0)
+    payload = struct.pack("!HBB", 0, 28, 0)
     with pytest.raises(ValueError, match="Expected opcode 27"):
         parse_proposals(payload)
 
 
 def test_parse_proposals_unknown_operation_type():
     """parse_proposals raises for unknown operation type (e.g. 99)."""
-    payload = struct.pack("<HBB", 0, 27, 99)
+    payload = struct.pack("!HBB", 0, 27, 99)
     with pytest.raises(ValueError, match="Unknown proposals operation"):
         parse_proposals(payload)
 
@@ -211,8 +210,8 @@ def test_build_commit_welcome_with_welcome():
 
 def test_parse_announce_commit_minimal():
     """parse_announce_commit returns (transition_id, commit_bytes) for minimal payload."""
-    # seq=0, opcode=29, transition_id=5, commit length 0
-    payload = struct.pack("<HBH", 0, 29, 5) + _varint(0)
+    # seq=0, opcode=29, transition_id=5, empty commit bytes
+    payload = struct.pack("!HBH", 0, 29, 5)
     tid, commit = parse_announce_commit(payload)
     assert tid == 5
     assert commit == b""
@@ -220,7 +219,7 @@ def test_parse_announce_commit_minimal():
 
 def test_parse_announce_commit_wrong_opcode():
     """parse_announce_commit raises when opcode is not 29."""
-    payload = struct.pack("<H", 0) + bytes([30]) + struct.pack("<H", 0) + _varint(0)
+    payload = struct.pack("!H", 0) + bytes([30]) + struct.pack("!H", 0)
     with pytest.raises(ValueError, match="Expected opcode 29"):
         parse_announce_commit(payload)
 
@@ -230,7 +229,7 @@ def test_parse_announce_commit_wrong_opcode():
 
 def test_parse_welcome_message_minimal():
     """parse_welcome_message returns (transition_id, welcome_bytes) for minimal payload."""
-    payload = struct.pack("<H", 0) + bytes([30]) + struct.pack("<H", 7) + _varint(0)
+    payload = struct.pack("!H", 0) + bytes([30]) + struct.pack("!H", 7)
     tid, welcome = parse_welcome_message(payload)
     assert tid == 7
     assert welcome == b""
@@ -238,6 +237,6 @@ def test_parse_welcome_message_minimal():
 
 def test_parse_welcome_message_wrong_opcode():
     """parse_welcome_message raises when opcode is not 30."""
-    payload = struct.pack("<H", 0) + bytes([29]) + struct.pack("<H", 0) + _varint(0)
+    payload = struct.pack("!H", 0) + bytes([29]) + struct.pack("!H", 0)
     with pytest.raises(ValueError, match="Expected opcode 30"):
         parse_welcome_message(payload)

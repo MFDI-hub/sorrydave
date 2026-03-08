@@ -52,6 +52,7 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Quick start: quickstart.md
+  - Concepts: concepts.md
   - API:
       - Session: api/session.md
       - Media: api/media.md

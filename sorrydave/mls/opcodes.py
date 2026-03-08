@@ -35,19 +35,28 @@ def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
     Raises:
         ValueError: On varint overflow or truncated data.
     """
-    n = 0
-    shift = 0
-    pos = offset
-    while pos < len(data):
-        b = data[pos]
-        pos += 1
-        n |= (b & 0x7F) << shift
-        if b < 0x80:
-            return n, pos
-        shift += 7
-        if shift >= 35:
-            raise ValueError("Varint overflow")
-    raise ValueError("Varint truncated")
+    if offset >= len(data):
+        raise ValueError("Varint truncated")
+    first = data[offset]
+    prefix = first >> 6
+    if prefix == 0b00:
+        return first & 0x3F, offset + 1
+    if prefix == 0b01:
+        if offset + 2 > len(data):
+            raise ValueError("Varint truncated")
+        value = ((first & 0x3F) << 8) | data[offset + 1]
+        return value, offset + 2
+    if prefix == 0b10:
+        if offset + 4 > len(data):
+            raise ValueError("Varint truncated")
+        value = (
+            ((first & 0x3F) << 24)
+            | (data[offset + 1] << 16)
+            | (data[offset + 2] << 8)
+            | data[offset + 3]
+        )
+        return value, offset + 4
+    raise ValueError("Varint overflow")
 
 
 def _read_opaque_varint(data: bytes, offset: int) -> tuple[bytes, int]:
@@ -67,6 +76,26 @@ def _read_opaque_varint(data: bytes, offset: int) -> tuple[bytes, int]:
     length, pos = _read_varint(data, offset)
     if pos + length > len(data):
         raise ValueError("Opaque truncated")
+    return data[pos : pos + length], pos + length
+
+
+def _read_vector_varint(data: bytes, offset: int) -> tuple[bytes, int]:
+    """
+    Read vector<V>: varint length then that many bytes.
+
+    Args:
+        data (bytes): Buffer.
+        offset (int): Start index.
+
+    Returns:
+        tuple[bytes, int]: (vector content bytes, new_offset).
+
+    Raises:
+        ValueError: If data is truncated.
+    """
+    length, pos = _read_varint(data, offset)
+    if pos + length > len(data):
+        raise ValueError("Vector truncated")
     return data[pos : pos + length], pos + length
 
 
@@ -103,7 +132,7 @@ def parse_external_sender_package(data: bytes) -> ExternalSenderPackage:
     """
     if len(data) < 2 + 1:
         raise ValueError("External sender package too short")
-    (seq,) = struct.unpack("<H", data[:2])
+    (seq,) = struct.unpack("!H", data[:2])
     opcode = data[2]
     if opcode != OPCODE_EXTERNAL_SENDER_PACKAGE:
         raise ValueError(f"Expected opcode 25, got {opcode}")
@@ -170,28 +199,32 @@ def parse_proposals(data: bytes) -> ProposalsMessage:
     """
     if len(data) < 2 + 1 + 1:
         raise ValueError("Proposals message too short")
-    (seq,) = struct.unpack("<H", data[:2])
+    (seq,) = struct.unpack("!H", data[:2])
     opcode = data[2]
     if opcode != OPCODE_PROPOSALS:
         raise ValueError(f"Expected opcode 27, got {opcode}")
     op_type = data[3]
+    if op_type not in (0, 1):
+        raise ValueError(f"Unknown proposals operation type {op_type}")
     rest = data[4:]
+    vector_bytes, end = _read_vector_varint(rest, 0)
+    if end != len(rest):
+        raise ValueError("Proposals trailing bytes")
     if op_type == 0:  # append
-        messages = []
-        off = 0
-        while off < len(rest):
-            msg, off = _read_opaque_varint(rest, off)
-            messages.append(msg)
-        return ProposalsMessage(sequence_number=seq, operation_type=0, proposal_messages=messages)
+        # MLSMessage<V> is an MLS vector, where each element is a full MLSMessage.
+        # We keep the vector payload as one message blob for downstream MLS parsing.
+        return ProposalsMessage(
+            sequence_number=seq,
+            operation_type=0,
+            proposal_messages=[vector_bytes],
+        )
     elif op_type == 1:  # revoke
         refs = []
         off = 0
-        while off < len(rest):
-            ref, off = _read_opaque_varint(rest, off)
+        while off < len(vector_bytes):
+            ref, off = _read_opaque_varint(vector_bytes, off)
             refs.append(ref)
         return ProposalsMessage(sequence_number=seq, operation_type=1, proposal_refs=refs)
-    else:
-        raise ValueError(f"Unknown proposals operation type {op_type}")
 
 
 def parse_announce_commit(data: bytes) -> tuple[int, bytes]:
@@ -209,12 +242,12 @@ def parse_announce_commit(data: bytes) -> tuple[int, bytes]:
     """
     if len(data) < 2 + 1 + 2:
         raise ValueError("Announce commit too short")
-    (seq,) = struct.unpack("<H", data[:2])
+    (seq,) = struct.unpack("!H", data[:2])
     opcode = data[2]
     if opcode != OPCODE_ANNOUNCE_COMMIT:
         raise ValueError(f"Expected opcode 29, got {opcode}")
-    (transition_id,) = struct.unpack("<H", data[3:5])
-    commit_message, _ = _read_opaque_varint(data, 5)
+    (transition_id,) = struct.unpack("!H", data[3:5])
+    commit_message = data[5:]
     return transition_id, commit_message
 
 
@@ -233,12 +266,12 @@ def parse_welcome_message(data: bytes) -> tuple[int, bytes]:
     """
     if len(data) < 2 + 1 + 2:
         raise ValueError("Welcome message too short")
-    (seq,) = struct.unpack("<H", data[:2])
+    (seq,) = struct.unpack("!H", data[:2])
     opcode = data[2]
     if opcode != OPCODE_WELCOME:
         raise ValueError(f"Expected opcode 30, got {opcode}")
-    (transition_id,) = struct.unpack("<H", data[3:5])
-    welcome_bytes, _ = _read_opaque_varint(data, 5)
+    (transition_id,) = struct.unpack("!H", data[3:5])
+    welcome_bytes = data[5:]
     return transition_id, welcome_bytes
 
 
@@ -254,8 +287,7 @@ def build_commit_welcome(commit_message: bytes, welcome_message: Union[bytes, No
         bytes: Opcode 28 message bytes.
     """
     out = bytes([OPCODE_COMMIT_WELCOME])
-    # MLSMessage commit
-    out += _write_opaque_varint(commit_message)
+    out += commit_message
     if welcome_message:
         out += welcome_message  # Welcome is not wrapped in MLSMessage per DAVE struct
     return out
@@ -272,12 +304,22 @@ def _write_opaque_varint(data: bytes) -> bytes:
         bytes: varint(len(data)) || data.
     """
     n = len(data)
-    buf = []
-    while n >= 0x80:
-        buf.append(0x80 | (n & 0x7F))
-        n >>= 7
-    buf.append(n & 0x7F)
-    return bytes(buf) + data
+    if n <= 0x3F:
+        prefix = bytes([n])
+    elif n <= 0x3FFF:
+        prefix = bytes([0x40 | (n >> 8), n & 0xFF])
+    elif n <= 0x3FFFFFFF:
+        prefix = bytes(
+            [
+                0x80 | ((n >> 24) & 0x3F),
+                (n >> 16) & 0xFF,
+                (n >> 8) & 0xFF,
+                n & 0xFF,
+            ]
+        )
+    else:
+        raise ValueError("Opaque too large")
+    return prefix + data
 
 
 # --- JSON opcodes (22, 31) ---
