@@ -2,8 +2,7 @@
 Frame encryptor and decryptor: codec-aware transform with DAVE protocol footer.
 """
 
-import time
-from typing import Callable, Optional, Union
+from typing import Callable, Union
 
 from sorrydave.crypto.cipher import (
     DAVE_MAGIC,
@@ -289,16 +288,9 @@ class FrameDecryptor:
     Parses supplemental footer (tag, nonce, unencrypted ranges, size, magic 0xFAFA),
     looks up key by generation from nonce, verifies GCM tag and decrypts. Tracks
     used (sender_id, nonce) to reject nonce reuse. Supports same codecs as FrameEncryptor.
-    May be given fallback ratchets (e.g. previous epoch) for in-flight frame decryption.
     """
 
-    def __init__(
-        self,
-        sender_user_id: int,
-        ratchet: KeyRatchet,
-        passthrough: bool = False,
-        fallback_ratchets: Optional[list[tuple[float, KeyRatchet]]] = None,
-    ):
+    def __init__(self, sender_user_id: int, ratchet: KeyRatchet, passthrough: bool = False):
         """
         Initialize the frame decryptor.
 
@@ -306,15 +298,11 @@ class FrameDecryptor:
             sender_user_id (int): Sender user ID (for nonce reuse tracking).
             ratchet (KeyRatchet): Key ratchet for this sender.
             passthrough (bool): If True, pass through non-protocol and silence frames (non-E2EE mode).
-            fallback_ratchets (Optional[list[tuple[float, KeyRatchet]]]): Optional list of
-                (expiry_monotonic_time, ratchet) for previous-epoch ratchets. Used to decrypt
-                in-flight frames from the previous epoch. Expired entries are skipped.
         """
         self._sender_user_id = sender_user_id
         self._ratchet = ratchet
         self._used_nonces: set[tuple[int, int]] = set()
         self._passthrough = passthrough
-        self._fallback_ratchets = list(fallback_ratchets) if fallback_ratchets else []
         # For nonce wrap: generation continues past 255 (protocol)
         self._wrap_count = 0
         self._seen_high_nonce = False  # True once we've seen nonce >= 0xFF000000
@@ -361,7 +349,6 @@ class FrameDecryptor:
             raise DecryptionError("Nonce reuse")
         msb = (suppl.nonce_32 >> 24) & 0xFF
         generation = self._generation_from_nonce(suppl.nonce_32)
-        last_error: Optional[Exception] = None
         try:
             key = self._ratchet.get_key_for_generation(generation)
             plain = decrypt_interleaved(
@@ -371,50 +358,26 @@ class FrameDecryptor:
                 suppl.tag_8,
                 suppl.unencrypted_ranges,
             )
-            self._apply_nonce_seen(suppl.nonce_32)
-            self._used_nonces.add((self._sender_user_id, suppl.nonce_32))
-            return plain
-        except (DecryptionError, ValueError) as e:
-            last_error = e
-        # Out-of-order: late frame from previous epoch (e.g. nonce 0xFF... after wrap)
-        if self._wrap_count > 0 and msb == 255:
-            alt_generation = (self._wrap_count - 1) * 256 + 255
-            try:
-                key = self._ratchet.get_key_for_generation(alt_generation)
-                plain = decrypt_interleaved(
-                    key,
-                    suppl.nonce_32,
-                    interleaved,
-                    suppl.tag_8,
-                    suppl.unencrypted_ranges,
-                )
-                self._apply_nonce_seen(suppl.nonce_32)
-                self._used_nonces.add((self._sender_user_id, suppl.nonce_32))
-                return plain
-            except (DecryptionError, ValueError):
-                pass
-        # Try retained previous-epoch ratchets (in-flight media during transition)
-        now = time.monotonic()
-        for expiry, fb_ratchet in self._fallback_ratchets:
-            if expiry <= now:
-                continue
-            try:
-                gen = (suppl.nonce_32 >> 24) & 0xFF
-                key = fb_ratchet.get_key_for_generation(gen)
-                plain = decrypt_interleaved(
-                    key,
-                    suppl.nonce_32,
-                    interleaved,
-                    suppl.tag_8,
-                    suppl.unencrypted_ranges,
-                )
-                self._used_nonces.add((self._sender_user_id, suppl.nonce_32))
-                return plain
-            except (DecryptionError, ValueError):
-                continue
-        if last_error is not None:
-            raise last_error
-        raise DecryptionError("Decryption failed")
+        except (DecryptionError, ValueError):
+            # Out-of-order: late frame from previous epoch (e.g. nonce 0xFF... after wrap)
+            if self._wrap_count > 0 and msb == 255:
+                alt_generation = (self._wrap_count - 1) * 256 + 255
+                try:
+                    key = self._ratchet.get_key_for_generation(alt_generation)
+                    plain = decrypt_interleaved(
+                        key,
+                        suppl.nonce_32,
+                        interleaved,
+                        suppl.tag_8,
+                        suppl.unencrypted_ranges,
+                    )
+                except (DecryptionError, ValueError):
+                    raise
+            else:
+                raise
+        self._apply_nonce_seen(suppl.nonce_32)
+        self._used_nonces.add((self._sender_user_id, suppl.nonce_32))
+        return plain
 
 
 def protocol_frame_check(frame: bytes) -> bool:

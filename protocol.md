@@ -588,7 +588,7 @@ The AV1 spec allows the last OBU to omit a size. This indicates that the last OB
 
 While performing the protocol transformation of an AV1 frame, for the last OBU in the frame:
 
-- Set obu_has_size_field to 0
+- set obu_has_size_field to 0
 - Remove LEB128 encoded payload size, if present
 
 WebRTC’s current AV1 packetizer removes OBU size from all OBUs (since this information is present in the aggregation headers already). WebRTC’s current AV1 depacketizer then puts back the OBU size when reconstructing the frame, on all OBUs.

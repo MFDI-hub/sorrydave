@@ -5,16 +5,13 @@ Maps Voice Gateway opcodes to MLS and media transform; no I/O.
 
 from __future__ import annotations
 
-import time
-from collections.abc import Iterable
-from typing import TYPE_CHECKING, Callable, Union
+from typing import TYPE_CHECKING, Union
 
 from sorrydave.crypto.ratchet import KeyRatchet
 from sorrydave.media.transform import FrameDecryptor, FrameEncryptor
 from sorrydave.mls.group_state import (
     create_group,
     get_dave_crypto_provider,
-    validate_group_dave_ciphersuite_and_extensions,
     validate_group_external_sender,
 )
 from sorrydave.mls.opcodes import ExternalSenderPackage, parse_external_sender_package
@@ -42,23 +39,13 @@ class DaveSession:
         8. Media: get_encryptor().encrypt(frame, codec=...) and get_decryptor(sender_id).decrypt(protocol_frame).
     """
 
-    def __init__(
-        self,
-        local_user_id: int,
-        protocol_version: int = 1,
-        identity_supplier: Union[Callable[[], tuple[bytes, bytes, bytes]], None] = None,
-    ):
+    def __init__(self, local_user_id: int, protocol_version: int = 1):
         """
         Initialize a DAVE session for the local user.
 
         Args:
             local_user_id (int): Local user identifier (e.g. Discord snowflake).
             protocol_version (int): DAVE protocol version. Defaults to 1.
-            identity_supplier (Union[Callable[[], tuple[bytes, bytes, bytes]], None]): Optional
-                callable that returns (key_package_bytes, hpke_private_key, signing_key_der) to use
-                the same identity across multiple sessions (e.g. voice channel + Go Live). When set,
-                prepare_epoch(1) uses it instead of generating a new key package. Use
-                SharedIdentityContext to share one keypair across sessions.
         """
         self._local_user_id = local_user_id
         self._protocol_version = protocol_version
@@ -70,28 +57,12 @@ class DaveSession:
         # Per-sender KeyRatchet for current epoch (sender_user_id -> KeyRatchet)
         self._send_ratchet: Union[KeyRatchet, None] = None
         self._receive_ratchets: dict[int, KeyRatchet] = {}
-        # Retained previous-epoch receive ratchets (expiry_monotonic, ratchet_dict) for in-flight decryption
-        self._retained_receive_ratchets: list[tuple[float, dict[int, KeyRatchet]]] = []
         self._retention_seconds = 10.0
-        # Passthrough mode for upgrade/downgrade (receive enabled first on downgrade, then send on execute)
-        self._receive_passthrough = False
-        self._send_passthrough = False
         # Epoch/transition state
         self._current_epoch = 0
-        self._member_leaf_indices: dict[int, int] = {}
-        # Pending protocol transition (non-zero transition_id); cleared on execute
-        self._pending_transition_id: Union[int, None] = None
-        self._pending_transition_protocol_version: Union[int, None] = None
+        self._member_leaf_indices: dict[int, int] = {}  # user_id -> leaf_index (when known)
         self._key_package_bytes: Union[bytes, None] = None
         self._group_id = b"dave-default-group"
-        # Optional shared identity: same keypair across concurrent voice gateway connections
-        self._identity_supplier: Union[Callable[[], tuple[bytes, bytes, bytes]], None] = (
-            identity_supplier
-        )
-        # Expected media session members (from opcodes 11/13); add proposals are validated against this
-        self._expected_member_ids: set[int] = set()
-        # Client commit validity: when epoch is 0, only accept commit that matches our initial local group commit
-        self._initial_commit_bytes: Union[bytes, None] = None
 
     def handle_external_sender_package(self, pkg: Union[ExternalSenderPackage, bytes]) -> None:
         """
@@ -133,25 +104,12 @@ class DaveSession:
         """
         if epoch_id != 1:
             return None
-        # Sole member reset: clear local group state per protocol (epoch=1 means new group)
-        self._group = None
-        self._send_ratchet = None
-        self._receive_ratchets = {}
-        self._retained_receive_ratchets = []
-        self._current_epoch = 0
-
+        from sorrydave.mls.group_state import create_key_package
         from sorrydave.mls.opcodes import build_key_package_message
 
-        if self._identity_supplier is not None:
-            kp_bytes, hpke_private, signing_der = self._identity_supplier()
-        else:
-            from sorrydave.mls.group_state import create_key_package
-
-            if self._crypto is None:
-                self._crypto = get_dave_crypto_provider()
-            kp_bytes, hpke_private, signing_der = create_key_package(
-                self._local_user_id, self._crypto
-            )
+        if self._crypto is None:
+            self._crypto = get_dave_crypto_provider()
+        kp_bytes, hpke_private, signing_der = create_key_package(self._local_user_id, self._crypto)
         self._hpke_private_key = hpke_private
         self._signing_key_der = signing_der
         self._key_package_bytes = kp_bytes
@@ -165,25 +123,6 @@ class DaveSession:
                 external_sender_identity=self._external_sender.identity,
             )
         return build_key_package_message(kp_bytes)
-
-    def add_expected_members(self, user_ids: Iterable[Union[int, str]]) -> None:
-        """
-        Add user IDs to the set of expected media session members.
-
-        Call after receiving opcode 11 (clients_connect). Add proposals for users
-        not in this set will be refused when the set is non-empty.
-        """
-        for uid in user_ids:
-            self._expected_member_ids.add(int(uid))
-
-    def remove_expected_member(self, user_id: Union[int, str]) -> None:
-        """
-        Remove a user ID from the set of expected media session members.
-
-        Call after receiving opcode 13 (client_disconnect). That user will not be
-        accepted in add proposals until they appear again in clients_connect.
-        """
-        self._expected_member_ids.discard(int(user_id))
 
     def handle_proposals(self, proposal_bytes: bytes) -> Union[bytes, None]:
         """
@@ -204,20 +143,9 @@ class DaveSession:
             proposals_msg = parse_proposals(proposal_bytes)
         except Exception:
             return None
-        # Revoke: remove cached proposals by ref (protocol: voice gateway may revoke in-flight proposals)
-        if proposals_msg.operation_type == 1:
-            if proposals_msg.proposal_refs:
-                for ref in proposals_msg.proposal_refs:
-                    try:
-                        self._group.revoke_proposal(ref)
-                    except Exception:
-                        pass
-            return None
         if proposals_msg.operation_type != 0 or not proposals_msg.proposal_messages:
             return None
-        from rfc9420 import SenderType
-        from rfc9420.protocol.data_structures import AddProposal, Proposal, ProposalType
-        from rfc9420.protocol.key_packages import KeyPackage
+        from rfc9420.protocol.data_structures import ProposalType, Sender, SenderType
         from rfc9420.protocol.messages import MLSPlaintext as MLSPlaintextRfc
 
         from sorrydave.mls.opcodes import split_proposal_messages_vector
@@ -230,34 +158,17 @@ class DaveSession:
                 sender = msg.auth_content.tbs.framed_content.sender
                 if sender.sender_type != SenderType.EXTERNAL:
                     continue
-                content_bytes = msg.auth_content.tbs.framed_content.content
-                try:
-                    proposal = Proposal.deserialize(content_bytes)
-                except Exception:
-                    continue
-                proposal_type = proposal.proposal_type
+                content = msg.auth_content.tbs.framed_content.content
+                proposal_type = getattr(content, "proposal_type", None)
+                if proposal_type is None:
+                    type_name = type(content).__name__
+                    if type_name == "AddProposal":
+                        proposal_type = ProposalType.ADD
+                    elif type_name == "RemoveProposal":
+                        proposal_type = ProposalType.REMOVE
                 if proposal_type not in allowed_proposal_types:
                     continue
-                if proposal_type == ProposalType.ADD and self._expected_member_ids:
-                    try:
-                        if not isinstance(proposal, AddProposal):
-                            continue
-                        kp = KeyPackage.deserialize(proposal.key_package)
-                        if (
-                            kp.leaf_node
-                            and kp.leaf_node.credential
-                            and kp.leaf_node.credential.identity
-                        ):
-                            add_user_id = int.from_bytes(
-                                kp.leaf_node.credential.identity[:8], "big"
-                            )
-                            if add_user_id not in self._expected_member_ids:
-                                continue
-                    except Exception:
-                        continue
-                self._group.process_proposal(
-                    msg, sender_leaf_index=0, sender_type=SenderType.EXTERNAL
-                )
+                self._group._inner.process_proposal(msg, Sender(0, SenderType.EXTERNAL))
             except Exception:
                 continue
         try:
@@ -265,8 +176,6 @@ class DaveSession:
                 return None
             commit_bytes, welcomes = create_commit_and_welcome(self._group, self._signing_key_der)
             welcome_bytes = welcomes[0] if welcomes else None
-            if self._current_epoch == 0:
-                self._initial_commit_bytes = commit_bytes
             return build_commit_welcome(commit_bytes, welcome_bytes)
         except Exception:
             return None
@@ -287,17 +196,11 @@ class DaveSession:
 
         if self._group is None:
             raise InvalidCommitError("No group to apply commit to")
-        # Client commit validity: without established group (epoch 0), only accept our own initial commit
-        if self._current_epoch == 0 and self._initial_commit_bytes is not None:
-            if commit_bytes != self._initial_commit_bytes:
-                raise InvalidCommitError("Commit does not match initial local group commit")
         from rfc9420.protocol.messages import MLSPlaintext
 
         msg = MLSPlaintext.deserialize(commit_bytes)
         sender_leaf_index = msg.auth_content.tbs.framed_content.sender.sender
         apply_commit(self._group, commit_bytes, sender_leaf_index)
-        self._initial_commit_bytes = None
-        self._current_epoch += 1
         self._refresh_receive_ratchets()
 
     def handle_welcome(self, transition_id: int, welcome_bytes: bytes) -> None:
@@ -318,7 +221,6 @@ class DaveSession:
         if self._crypto is None:
             self._crypto = get_dave_crypto_provider()
         self._group = join_from_welcome(welcome_bytes, self._hpke_private_key, self._crypto)
-        validate_group_dave_ciphersuite_and_extensions(self._group)
         if self._external_sender is not None:
             validate_group_external_sender(
                 self._group,
@@ -326,43 +228,8 @@ class DaveSession:
                 self._external_sender.credential_type,
                 self._external_sender.identity,
             )
-        self._current_epoch += 1
         self._refresh_receive_ratchets()
         self._refresh_send_ratchet()
-
-    def set_receive_passthrough(self, enabled: bool) -> None:
-        """
-        Enable or disable passthrough mode on receive-side frame decryptors.
-
-        Used for downgrade: enable when receiving dave_protocol_prepare_transition
-        with protocol_version=0 so in-flight non-E2EE frames can pass through.
-        """
-        self._receive_passthrough = enabled
-
-    def set_send_passthrough(self, enabled: bool) -> None:
-        """
-        Enable or disable passthrough mode on send-side frame encryptors.
-
-        Used for downgrade: enable when receiving dave_protocol_execute_transition
-        for a transition to protocol version 0.
-        """
-        self._send_passthrough = enabled
-
-    def get_pending_transition(self) -> Union[tuple[int, int], None]:
-        """
-        Return the pending protocol transition, if any.
-
-        After handle_prepare_transition with non-zero transition_id and
-        protocol_version != 0, returns (transition_id, protocol_version) so the
-        app can prepare receive decryptors and send ready_for_transition when ready.
-        Cleared when execute_transition(transition_id) is called.
-
-        Returns:
-            Union[tuple[int, int], None]: (transition_id, protocol_version) or None.
-        """
-        if self._pending_transition_id is None or self._pending_transition_protocol_version is None:
-            return None
-        return (self._pending_transition_id, self._pending_transition_protocol_version)
 
     def handle_prepare_transition(self, protocol_version: int, transition_id: int) -> None:
         """
@@ -371,42 +238,20 @@ class DaveSession:
         Per protocol sole member reset: "Upon receiving dave_protocol_prepare_transition
         with transition_id = 0, the client immediately executes the transition."
 
-        For downgrade to transport-only (protocol_version=0), enables receive-side
-        passthrough so in-flight frames can be passed through.
-
-        For non-zero transition_id and protocol_version != 0, records the pending
-        transition so the app can prepare receive decryptors and report ready
-        via build_ready_for_transition(transition_id).
-
         Args:
             protocol_version (int): Protocol version for the transition.
             transition_id (int): Transition ID. 0 = execute immediately (e.g. sole member reset).
         """
-        if protocol_version == 0:
-            self.set_receive_passthrough(True)
         if transition_id == 0:
             self.execute_transition(0)
-            return
-        if protocol_version != 0:
-            self._pending_transition_id = transition_id
-            self._pending_transition_protocol_version = protocol_version
 
     def execute_transition(self, transition_id: int) -> None:
         """
         Process opcode 22: rotate key ratchets to new epoch.
 
-        For downgrade to protocol version 0, enables send-side passthrough
-        (receive-side was enabled on prepare_transition). For E2EE transitions,
-        passthrough remains False.
+        Args:
+            transition_id (int): Transition identifier from execute transition payload.
         """
-        if self._receive_passthrough:
-            self.set_send_passthrough(True)
-        else:
-            self.set_receive_passthrough(False)
-            self.set_send_passthrough(False)
-        if self._pending_transition_id == transition_id:
-            self._pending_transition_id = None
-            self._pending_transition_protocol_version = None
         self._refresh_send_ratchet()
         self._refresh_receive_ratchets()
 
@@ -433,13 +278,9 @@ class DaveSession:
         self._group = None
         self._send_ratchet = None
         self._receive_ratchets = {}
-        self._retained_receive_ratchets = []
         self._member_leaf_indices = {}
-        self._pending_transition_id = None
-        self._pending_transition_protocol_version = None
         self._current_epoch = 0
         self._key_package_bytes = None
-        self._initial_commit_bytes = None
         return remove_proposal_bytes
 
     def _refresh_send_ratchet(self) -> None:
@@ -459,74 +300,37 @@ class DaveSession:
         """
         Refresh receive ratchets for all current senders.
 
-        Retains previous-epoch ratchets for up to _retention_seconds so in-flight
-        media from the previous epoch can still be decrypted. Then replaces the
-        ratchet dict with new ratchets for the current group.
+        Replaces the ratchet dict so removed members are dropped. No-op if no group.
         """
         if self._group is None:
             return
         from sorrydave.mls.group_state import export_sender_base_secret
 
-        # Retain current ratchets for transition period (protocol: up to ten seconds)
-        if self._receive_ratchets:
-            expiry = time.monotonic() + self._retention_seconds
-            self._retained_receive_ratchets.append((expiry, dict(self._receive_ratchets)))
-        # Evict expired retained ratchets
-        now = time.monotonic()
-        self._retained_receive_ratchets = [
-            (e, d) for e, d in self._retained_receive_ratchets if e > now
-        ]
-
         new_ratchets: dict[int, KeyRatchet] = {}
-        own_leaf = self._group.own_leaf_index
-        for leaf_index, identity in self._group.iter_members():
-            if leaf_index == own_leaf:
+        n = self._group._inner.get_member_count()
+        for leaf_index in range(n):
+            if leaf_index == self._group._inner._own_leaf_index:
                 continue
-            user_id = self._identity_to_user_id(identity)
+            user_id = self._leaf_index_to_user_id(leaf_index)
             if user_id is None:
                 user_id = leaf_index
             base = export_sender_base_secret(self._group, user_id)
             new_ratchets[user_id] = KeyRatchet(base, retention_seconds=self._retention_seconds)
         self._receive_ratchets = new_ratchets
 
-    @staticmethod
-    def _identity_to_user_id(identity: bytes) -> Union[int, None]:
-        """Extract user ID from a member's credential identity (big-endian 8-byte snowflake)."""
-        if identity and len(identity) >= 8:
-            return int.from_bytes(identity[:8], "big")
-        return None
-
     def _leaf_index_to_user_id(self, leaf_index: int) -> Union[int, None]:
         """Resolve leaf index to user ID from tree credential (if available)."""
         if self._group is None:
             return None
         try:
-            for li, identity in self._group.iter_members():
-                if li == leaf_index:
-                    return self._identity_to_user_id(identity)
+            node = self._group._inner._ratchet_tree.get_node(leaf_index * 2)
+            if node and node.leaf_node and node.leaf_node.credential:
+                identity = node.leaf_node.credential.identity
+                if len(identity) >= 8:
+                    return int.from_bytes(identity[:8], "big")
         except Exception:
             pass
         return None
-
-    def get_epoch_authenticator(self) -> str:
-        """
-        Return the MLS epoch authenticator for the latest epoch as a 30-digit displayable code.
-
-        Per protocol: displayable code with 30 digits, 6 groups of 5. Use for out-of-band
-        verification that all members have the same view of the group.
-
-        Returns:
-            str: 30-digit code (e.g. for UI comparison).
-
-        Raises:
-            RuntimeError: If no group is established.
-        """
-        if self._group is None:
-            raise RuntimeError("No group; epoch authenticator not available")
-        raw = self._group._inner.get_epoch_authenticator()
-        from sorrydave.identity import epoch_authenticator_display
-
-        return epoch_authenticator_display(raw)
 
     def get_encryptor(self) -> FrameEncryptor:
         """
@@ -542,11 +346,7 @@ class DaveSession:
             self._refresh_send_ratchet()
         if self._send_ratchet is None:
             raise RuntimeError("No send ratchet; group not established")
-        return FrameEncryptor(
-            self._local_user_id,
-            self._send_ratchet,
-            passthrough=self._send_passthrough,
-        )
+        return FrameEncryptor(self._local_user_id, self._send_ratchet)
 
     def get_decryptor(self, sender_id: int) -> FrameDecryptor:
         """
@@ -565,59 +365,4 @@ class DaveSession:
             self._refresh_receive_ratchets()
         if sender_id not in self._receive_ratchets:
             raise KeyError(f"No ratchet for sender {sender_id}")
-        now = time.monotonic()
-        fallbacks: list[tuple[float, KeyRatchet]] = [
-            (expiry, d[sender_id])
-            for expiry, d in self._retained_receive_ratchets
-            if expiry > now and sender_id in d
-        ]
-        return FrameDecryptor(
-            sender_id,
-            self._receive_ratchets[sender_id],
-            passthrough=self._receive_passthrough,
-            fallback_ratchets=fallbacks if fallbacks else None,
-        )
-
-
-class SharedIdentityContext:
-    """
-    Holds a single key package and key material for use across multiple DaveSessions.
-
-    Use when the same identity (same signature keypair) must be used for all
-    concurrent voice gateway connections (e.g. voice channel and Go Live stream).
-    Create one SharedIdentityContext per local user, then pass its get_supplier()
-    to each DaveSession(local_user_id, identity_supplier=ctx.get_supplier()).
-    """
-
-    def __init__(
-        self,
-        local_user_id: int,
-        crypto: Union[DefaultCryptoProvider, None] = None,
-    ) -> None:
-        """
-        Create a shared identity context and generate one key package.
-
-        Args:
-            local_user_id (int): Local user identifier (e.g. Discord snowflake).
-            crypto (Union[DefaultCryptoProvider, None]): MLS crypto provider; uses default if None.
-        """
-        from sorrydave.mls.group_state import create_key_package
-
-        if crypto is None:
-            crypto = get_dave_crypto_provider()
-        kp_bytes, hpke_private, signing_der = create_key_package(local_user_id, crypto)
-        self._key_package_bytes = kp_bytes
-        self._hpke_private_key = hpke_private
-        self._signing_key_der = signing_der
-
-    def get_supplier(self) -> Callable[[], tuple[bytes, bytes, bytes]]:
-        """
-        Return a callable that returns (key_package_bytes, hpke_private_key, signing_key_der).
-
-        Pass this to DaveSession(..., identity_supplier=ctx.get_supplier()).
-        """
-        return lambda: (
-            self._key_package_bytes,
-            self._hpke_private_key,
-            self._signing_key_der,
-        )
+        return FrameDecryptor(sender_id, self._receive_ratchets[sender_id])

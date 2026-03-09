@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Security :: Cryptography",
 ]
 dependencies = [
-    "rfc9420>=0.6",
+    "rfc9420>=0.7.0",
     "cryptography>=41",
     "pycryptodome>=3.19",
 ]
@@ -32,21 +32,28 @@ dependencies = [
 Repository = "https://github.com/MFDI-hub/sorrydave"
 Documentation = "https://github.com/MFDI-hub/sorrydave#readme"
 
-[project.optional-dependencies]
-dev = ["pytest>=7", "pytest-cov", "ruff>=0.8", "mypy>=1.0"]
 # mkdocs 2.x is incompatible with mkdocs-material; pin to 1.x
+[project.optional-dependencies]
 docs = ["mkdocs~=1.6", "mkdocs-material>=9.5", "mkdocstrings[python]>=0.24", "pymdown-extensions"]
 
 # uv: install with uv sync --all-groups (needed for scripts/publish.py)
 [dependency-groups]
-publish = ["python-dotenv>=1.0"]
+dev = [
+  "python-dotenv>=1.0.0",
+  "pytest>=8.0.0",
+  "ruff>=0.6.0",
+  "mypy>=1.10.0",
+  "tomli>=2.0.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sorrydave*"]
 
-# Versions to run checks for (scripts/run_checks.py --all-python and CI)
+# Paths and Python versions for scripts/run_checks.py (and CI)
 [tool.run_checks]
+source_paths = ["sorrydave"]
+test_paths = ["tests"]
 python-versions = ["3.9", "3.10", "3.11", "3.12"]
 
 [tool.ruff]

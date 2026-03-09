@@ -15,7 +15,6 @@ Public functions:
     create_commit_and_welcome: Build commit and welcomes; used by DaveSession.handle_proposals.
     create_remove_proposal_for_self: Remove proposal for local member; used by DaveSession.leave_group.
     create_update_proposal: Update proposal to refresh leaf keys; optional.
-    validate_group_dave_ciphersuite_and_extensions: Check ciphersuite and extension list for DAVE.
     validate_group_external_sender: Check external sender matches; used when applying commits.
     get_external_senders_from_group: Read external senders from group context.
 """
@@ -240,11 +239,6 @@ def get_external_senders_from_group(group: Group) -> list[tuple[bytes, int, byte
     Parse GroupContext.extensions and return list of (signature_key, credential_type, identity)
     for the external_senders extension (type 0x0002).
 
-    Note: Uses ``group._inner._group_context`` because the rfc9420 Group public API
-    does not expose group context extensions.  This is the only _inner access retained
-    and is required for protocol-mandated external sender validation (protocol.md
-    §Invalid Groups).
-
     Returns:
         list[tuple[bytes, int, bytes]]: Empty if no external senders extension or parse error.
     """
@@ -285,45 +279,6 @@ def get_external_senders_from_group(group: Group) -> list[tuple[bytes, int, byte
         return []
 
 
-def validate_group_dave_ciphersuite_and_extensions(group: Group) -> None:
-    """
-    Verify the group has the expected DAVE ciphersuite and extension list (protocol version).
-
-    Per protocol: group must have expected ciphersuite and extension list (external_senders only).
-
-    Raises:
-        InvalidCommitError: If ciphersuite is not DAVE or extensions are not exactly external_senders.
-    """
-    try:
-        inner = group._inner
-        gc = inner._group_context
-        if gc is None:
-            raise InvalidCommitError("Group has no group context")
-        if getattr(gc, "cipher_suite_id", None) != DAVE_MLS_CIPHERSUITE_ID:
-            raise InvalidCommitError(
-                f"Group ciphersuite must be {DAVE_MLS_CIPHERSUITE_ID}; got {getattr(gc, 'cipher_suite_id', None)}"
-            )
-        data = gc.extensions if isinstance(gc.extensions, bytes) else b""
-        if not data:
-            raise InvalidCommitError("Group must have exactly one extension (external_senders)")
-        n_ext, pos = _read_varint(data, 0)
-        if n_ext != 1:
-            raise InvalidCommitError(
-                f"Group must have exactly one extension (external_senders); got {n_ext}"
-            )
-        if pos + 2 > len(data):
-            raise InvalidCommitError("Group extensions truncated")
-        ext_type = struct.unpack("!H", data[pos : pos + 2])[0]
-        if ext_type != EXTENSION_TYPE_EXTERNAL_SENDERS:
-            raise InvalidCommitError(
-                f"Group extension must be external_senders (0x0002); got 0x{ext_type:04x}"
-            )
-    except InvalidCommitError:
-        raise
-    except Exception as e:
-        raise InvalidCommitError("Invalid group ciphersuite or extensions") from e
-
-
 def validate_group_external_sender(
     group: Group,
     expected_signature_key: bytes,
@@ -348,6 +303,32 @@ def validate_group_external_sender(
         raise InvalidCommitError("Group external sender does not match voice gateway package")
 
 
+def _inject_group_extensions(group: Group, extensions_bytes: bytes) -> None:
+    """Replace the GroupContext extensions on an epoch-0 group.
+    At epoch 0, KeySchedule.from_epoch_secret does not bind the group context
+    into the key derivation (only the random epoch secret is used), so swapping
+    the GroupContext with updated extensions is safe before any commits.
+    """
+    from rfc9420.protocol.data_structures import GroupContext
+
+    inner = group._inner
+    old_gc = inner._group_context
+    if old_gc is None:
+        return
+    new_gc = GroupContext(
+        group_id=old_gc.group_id,
+        epoch=old_gc.epoch,
+        tree_hash=old_gc.tree_hash,
+        confirmed_transcript_hash=old_gc.confirmed_transcript_hash,
+        extensions=extensions_bytes,
+        version=old_gc.version,
+        cipher_suite_id=old_gc.cipher_suite_id,
+    )
+    inner._group_context = new_gc
+    if inner._key_schedule is not None:
+        inner._key_schedule._group_context = new_gc
+
+
 def create_group(
     group_id: bytes,
     key_package_bytes: bytes,
@@ -369,16 +350,18 @@ def create_group(
     from rfc9420.mls.group import Group
     from rfc9420.protocol.key_packages import KeyPackage
 
-    initial_extensions = b""
+    kp = KeyPackage.deserialize(key_package_bytes)
+    group = Group.create(group_id, kp, crypto)
+
     if external_sender_signature_key is not None and external_sender_identity is not None:
-        initial_extensions = serialize_external_senders_extension(
+        extensions_bytes = serialize_external_senders_extension(
             signature_key=external_sender_signature_key,
             credential_type=external_sender_credential_type,
             identity=external_sender_identity,
         )
+        _inject_group_extensions(group, extensions_bytes)
 
-    kp = KeyPackage.deserialize(key_package_bytes)
-    return Group.create(group_id, kp, crypto, initial_extensions=initial_extensions)
+    return group
 
 
 def join_from_welcome(
@@ -434,19 +417,32 @@ def _check_no_duplicate_credentials(group: Group) -> None:
     Per DAVE client commit validity: "The resulting group includes a duplicated basic
     credential (i.e. the big-endian user ID snowflake) between two or more leaf nodes."
     """
+    inner = group._inner
+    tree = getattr(inner, "_ratchet_tree", None)
+    if tree is None:
+        return
     seen: set[bytes] = set()
-    try:
-        for _leaf_index, identity in group.iter_members():
-            if not identity or len(identity) < 8:
+    n = inner.get_member_count()
+    for leaf_index in range(n):
+        try:
+            node = tree.get_node(leaf_index * 2)
+            if node is None or not getattr(node, "leaf_node", None):
+                continue
+            leaf = node.leaf_node
+            cred = getattr(leaf, "credential", None)
+            if cred is None:
+                continue
+            identity = getattr(cred, "identity", None)
+            if identity is None or len(identity) < 8:
                 continue
             id_bytes = identity[:8]
             if id_bytes in seen:
                 raise InvalidCommitError("Duplicate basic credential in group tree")
             seen.add(id_bytes)
-    except InvalidCommitError:
-        raise
-    except Exception:
-        return
+        except InvalidCommitError:
+            raise
+        except Exception:
+            continue
 
 
 def apply_commit(group: Group, commit_mls_plaintext_bytes: bytes, sender_leaf_index: int) -> None:
@@ -466,10 +462,12 @@ def apply_commit(group: Group, commit_mls_plaintext_bytes: bytes, sender_leaf_in
         InvalidCommitError: If commit application fails or duplicate credentials.
     """
     try:
+        from rfc9420.protocol.data_structures import Sender, SenderType
         from rfc9420.protocol.messages import MLSPlaintext
 
         msg = MLSPlaintext.deserialize(commit_mls_plaintext_bytes)
-        group.apply_commit(msg, sender_leaf_index)
+        sender = Sender(sender_leaf_index, SenderType.MEMBER)
+        group.apply_commit(msg, sender.sender)
         _check_no_duplicate_credentials(group)
     except InvalidCommitError:
         raise
@@ -495,12 +493,12 @@ def process_proposal(
         sender_leaf_index (int): Leaf index of the sender.
         sender_type (int): 1 = MEMBER, 2 = EXTERNAL. Defaults to 1.
     """
-    from rfc9420 import SenderType
+    from rfc9420.protocol.data_structures import Sender, SenderType
     from rfc9420.protocol.messages import MLSPlaintext
 
     msg = MLSPlaintext.deserialize(proposal_mls_plaintext_bytes)
     st = SenderType.EXTERNAL if sender_type == 2 else SenderType.MEMBER
-    group.process_proposal(msg, sender_leaf_index, sender_type=st)
+    group._inner.process_proposal(msg, Sender(sender_leaf_index, st))
 
 
 def create_commit_and_welcome(group: Group, signing_key_der: bytes) -> tuple[bytes, list[bytes]]:
@@ -536,7 +534,8 @@ def create_remove_proposal_for_self(group: Group, signing_key_der: bytes) -> byt
     Returns:
         bytes: Serialized MLS Plaintext proposal to send (e.g. via opcode 27).
     """
-    proposal = group.remove(group.own_leaf_index, signing_key_der)
+    own_leaf_index = group._inner._own_leaf_index
+    proposal = group.remove(own_leaf_index, signing_key_der)
     return proposal.serialize()
 
 
@@ -600,7 +599,7 @@ def create_update_proposal(
     lifetime_not_before = 0
     lifetime_not_after = (1 << 64) - 1
     group_id = group.group_id
-    leaf_index = group.own_leaf_index
+    leaf_index = group._inner._own_leaf_index
     leaf_node = LeafNode(
         encryption_key=hpke_public,
         signature_key=sig_public_bytes,

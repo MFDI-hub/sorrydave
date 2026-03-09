@@ -1,0 +1,496 @@
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_cipher.py:1:1
+   |
+ 1 | / import pytest
+ 2 | | from sorrydave.crypto.cipher import (
+ 3 | |     uleb128_encode,
+ 4 | |     uleb128_decode,
+ 5 | |     expand_nonce_96,
+ 6 | |     encrypt_interleaved,
+ 7 | |     decrypt_interleaved,
+ 8 | | )
+ 9 | | from sorrydave.types import UnencryptedRange
+10 | | from sorrydave.exceptions import DecryptionError
+   | |________________________________________________^
+   |
+help: Organize imports
+
+F401 [*] `sorrydave.crypto.cipher.uleb128_encode` imported but unused
+ --> tests\test_cipher.py:3:5
+  |
+1 | import pytest
+2 | from sorrydave.crypto.cipher import (
+3 |     uleb128_encode,
+  |     ^^^^^^^^^^^^^^
+4 |     uleb128_decode,
+5 |     expand_nonce_96,
+  |
+help: Remove unused import
+
+F401 [*] `sorrydave.crypto.cipher.uleb128_decode` imported but unused
+ --> tests\test_cipher.py:4:5
+  |
+2 | from sorrydave.crypto.cipher import (
+3 |     uleb128_encode,
+4 |     uleb128_decode,
+  |     ^^^^^^^^^^^^^^
+5 |     expand_nonce_96,
+6 |     encrypt_interleaved,
+  |
+help: Remove unused import
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_cipher_comprehensive.py:3:1
+   |
+ 1 |   """Comprehensive cipher tests: nonce expansion, GCM encrypt/decrypt, interleaved ranges, edge cases."""
+ 2 |
+ 3 | / import pytest
+ 4 | |
+ 5 | | from sorrydave.crypto.cipher import (
+ 6 | |     DAVE_MAGIC,
+ 7 | |     GCM_TAG_LENGTH,
+ 8 | |     decrypt_interleaved,
+ 9 | |     encrypt_interleaved,
+10 | |     expand_nonce_96,
+11 | | )
+12 | | from sorrydave.exceptions import DecryptionError
+13 | | from sorrydave.types import UnencryptedRange
+   | |____________________________________________^
+   |
+help: Organize imports
+
+F401 [*] `pytest` imported but unused
+ --> tests\test_codecs.py:1:8
+  |
+1 | import pytest
+  |        ^^^^^^
+2 | from sorrydave.media.codecs import get_unencrypted_ranges
+3 | from sorrydave.types import UnencryptedRange
+  |
+help: Remove unused import: `pytest`
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_codecs_comprehensive.py:3:1
+   |
+ 1 |   """Comprehensive codec tests: VP8, H264, H265, AV1 unencrypted ranges and AV1 transform."""
+ 2 |
+ 3 | / import pytest
+ 4 | |
+ 5 | | from sorrydave.media.codecs import (
+ 6 | |     AV1_OBU_DROP_TYPES,
+ 7 | |     H264_VCL_TYPES,
+ 8 | |     VP8_HEADER_DELTA_LEN,
+ 9 | |     VP8_HEADER_KEYFRAME_LEN,
+10 | |     _av1_unencrypted_ranges,
+11 | |     _h264_unencrypted_ranges,
+12 | |     _h265_unencrypted_ranges,
+13 | |     _leb128_decode,
+14 | |     _leb128_encode_minimal,
+15 | |     _vp8_unencrypted_ranges,
+16 | |     get_unencrypted_ranges,
+17 | |     transform_av1_frame_for_encrypt,
+18 | | )
+19 | | from sorrydave.types import UnencryptedRange
+   | |____________________________________________^
+   |
+help: Organize imports
+
+F401 [*] `sorrydave.types.UnencryptedRange` imported but unused
+  --> tests\test_codecs_comprehensive.py:19:29
+   |
+17 |     transform_av1_frame_for_encrypt,
+18 | )
+19 | from sorrydave.types import UnencryptedRange
+   |                             ^^^^^^^^^^^^^^^^
+   |
+help: Remove unused import: `sorrydave.types.UnencryptedRange`
+
+B017 Do not assert blind exception: `Exception`
+  --> tests\test_group_state.py:78:10
+   |
+76 |     kp_bytes, hpke_private, _ = create_key_package(999)
+77 |     crypto = get_dave_crypto_provider()
+78 |     with pytest.raises(Exception):  # rfc9420 may raise various errors
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^
+79 |         join_from_welcome(b"invalid_welcome_bytes", hpke_private, crypto)
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_group_state_comprehensive.py:3:1
+   |
+ 1 |   """Comprehensive group_state tests: key packages, group creation, exports, extensions, validation."""
+ 2 |
+ 3 | / import pytest
+ 4 | |
+ 5 | | from sorrydave.exceptions import InvalidCommitError
+ 6 | | from sorrydave.mls.group_state import (
+ 7 | |     DAVE_MLS_CIPHERSUITE_ID,
+ 8 | |     EXPORTER_LABEL,
+ 9 | |     EXPORTER_LENGTH,
+10 | |     EXTENSION_TYPE_EXTERNAL_SENDERS,
+11 | |     _check_no_duplicate_credentials,
+12 | |     _read_opaque_varint,
+13 | |     _read_varint,
+14 | |     _write_opaque_varint,
+15 | |     _write_varint,
+16 | |     apply_commit,
+17 | |     create_commit_and_welcome,
+18 | |     create_group,
+19 | |     create_key_package,
+20 | |     create_remove_proposal_for_self,
+21 | |     create_update_proposal,
+22 | |     export_sender_base_secret,
+23 | |     get_dave_crypto_provider,
+24 | |     get_external_senders_from_group,
+25 | |     join_from_welcome,
+26 | |     serialize_external_senders_extension,
+27 | |     validate_group_external_sender,
+28 | | )
+   | |_^
+   |
+help: Organize imports
+
+F401 [*] `sorrydave.mls.group_state.get_external_senders_from_group` imported but unused
+  --> tests\test_group_state_comprehensive.py:24:5
+   |
+22 |     export_sender_base_secret,
+23 |     get_dave_crypto_provider,
+24 |     get_external_senders_from_group,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+25 |     join_from_welcome,
+26 |     serialize_external_senders_extension,
+   |
+help: Remove unused import
+
+F401 [*] `sorrydave.mls.group_state.validate_group_external_sender` imported but unused
+  --> tests\test_group_state_comprehensive.py:27:5
+   |
+25 |     join_from_welcome,
+26 |     serialize_external_senders_extension,
+27 |     validate_group_external_sender,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+28 | )
+   |
+help: Remove unused import
+
+E721 Use `is` and `is not` for type comparisons, or `isinstance()` for isinstance checks
+  --> tests\test_group_state_comprehensive.py:62:16
+   |
+60 |         c1 = get_dave_crypto_provider()
+61 |         c2 = get_dave_crypto_provider()
+62 |         assert type(c1) == type(c2)
+   |                ^^^^^^^^^^^^^^^^^^^^
+   |
+
+B017 Do not assert blind exception: `Exception`
+   --> tests\test_group_state_comprehensive.py:138:14
+    |
+136 | class TestJoinFromWelcome:
+137 |     def test_invalid_welcome_raises(self, crypto):
+138 |         with pytest.raises(Exception):
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^
+139 |             join_from_welcome(b"\x00\x01\x02", b"\x00" * 32, crypto)
+    |
+
+F841 Local variable `update_bytes` is assigned to but never used
+   --> tests\test_group_state_comprehensive.py:207:9
+    |
+205 |         kp_bytes, _, signing_der = create_key_package(1, crypto)
+206 |         group = create_group(b"commit-group", kp_bytes, crypto)
+207 |         update_bytes = create_update_proposal(group, signing_der, 1, crypto)
+    |         ^^^^^^^^^^^^
+208 |         commit_bytes, welcomes = create_commit_and_welcome(group, signing_der)
+209 |         assert isinstance(commit_bytes, bytes)
+    |
+help: Remove assignment to unused variable `update_bytes`
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> tests\test_identity.py:1:1
+  |
+1 | / import pytest
+2 | | from sorrydave.identity import displayable_code, generate_fingerprint, epoch_authenticator_display
+  | |__________________________________________________________________________________________________^
+  |
+help: Organize imports
+
+F401 [*] `pytest` imported but unused
+ --> tests\test_identity.py:1:8
+  |
+1 | import pytest
+  |        ^^^^^^
+2 | from sorrydave.identity import displayable_code, generate_fingerprint, epoch_authenticator_display
+  |
+help: Remove unused import: `pytest`
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_identity_comprehensive.py:3:1
+   |
+ 1 |   """Comprehensive identity tests: displayable_code, fingerprint, epoch authenticator."""
+ 2 |
+ 3 | / import pytest
+ 4 | |
+ 5 | | from sorrydave.identity import (
+ 6 | |     EPOCH_AUTH_DIGITS,
+ 7 | |     EPOCH_AUTH_GROUP_SIZE,
+ 8 | |     FINGERPRINT_SALT,
+ 9 | |     FINGERPRINT_VERSION,
+10 | |     PAIRWISE_DIGITS,
+11 | |     PAIRWISE_GROUP_SIZE,
+12 | |     SCRYPT_DKLEN,
+13 | |     SCRYPT_N,
+14 | |     SCRYPT_P,
+15 | |     SCRYPT_R,
+16 | |     displayable_code,
+17 | |     epoch_authenticator_display,
+18 | |     generate_fingerprint,
+19 | | )
+   | |_^
+   |
+help: Organize imports
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_integration.py:3:1
+   |
+ 1 |   """End-to-end integration tests: full encrypt/decrypt pipeline, multi-codec, epoch transitions."""
+ 2 |
+ 3 | / import pytest
+ 4 | |
+ 5 | | from sorrydave.crypto.ratchet import KeyRatchet
+ 6 | | from sorrydave.exceptions import DecryptionError
+ 7 | | from sorrydave.media.transform import (
+ 8 | |     SILENCE_PACKET,
+ 9 | |     FrameDecryptor,
+10 | |     FrameEncryptor,
+11 | |     protocol_frame_check,
+12 | | )
+   | |_^
+   |
+help: Organize imports
+
+F841 Local variable `enc_r` is assigned to but never used
+   --> tests\test_integration.py:119:9
+    |
+118 |     def test_passthrough_mode_non_protocol(self):
+119 |         enc_r = KeyRatchet(b"\x01" * 16)
+    |         ^^^^^
+120 |         dec_r = KeyRatchet(b"\x01" * 16)
+121 |         dec = FrameDecryptor(sender_user_id=1, ratchet=dec_r, passthrough=True)
+    |
+help: Remove assignment to unused variable `enc_r`
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_opcodes_comprehensive.py:3:1
+   |
+ 1 |   """Comprehensive opcode tests: all parsers, builders, edge cases, and error conditions."""
+ 2 |
+ 3 | / import json
+ 4 | |
+ 5 | | import pytest
+ 6 | |
+ 7 | | from sorrydave.mls.opcodes import (
+ 8 | |     OPCODE_ANNOUNCE_COMMIT,
+ 9 | |     OPCODE_CLIENT_DISCONNECT,
+10 | |     OPCODE_CLIENTS_CONNECT,
+11 | |     OPCODE_COMMIT_WELCOME,
+12 | |     OPCODE_EXECUTE_TRANSITION,
+13 | |     OPCODE_EXTERNAL_SENDER_PACKAGE,
+14 | |     OPCODE_IDENTIFY,
+15 | |     OPCODE_INVALID_COMMIT_WELCOME,
+16 | |     OPCODE_KEY_PACKAGE,
+17 | |     OPCODE_PREPARE_EPOCH,
+18 | |     OPCODE_PREPARE_TRANSITION,
+19 | |     OPCODE_PROPOSALS,
+20 | |     OPCODE_READY_FOR_TRANSITION,
+21 | |     OPCODE_SELECT_PROTOCOL_ACK,
+22 | |     OPCODE_WELCOME,
+23 | |     ExternalSenderPackage,
+24 | |     build_commit_welcome,
+25 | |     build_identify,
+26 | |     build_invalid_commit_welcome,
+27 | |     build_key_package_message,
+28 | |     build_ready_for_transition,
+29 | |     parse_announce_commit,
+30 | |     parse_client_disconnect,
+31 | |     parse_clients_connect,
+32 | |     parse_commit_welcome,
+33 | |     parse_execute_transition,
+34 | |     parse_external_sender_package,
+35 | |     parse_prepare_epoch,
+36 | |     parse_prepare_transition,
+37 | |     parse_proposals,
+38 | |     parse_select_protocol_ack,
+39 | |     parse_welcome_message,
+40 | |     split_proposal_messages_vector,
+41 | |     _read_varint,
+42 | |     _read_opaque_varint,
+43 | |     _write_opaque_varint,
+44 | | )
+45 | | import struct
+   | |_____________^
+   |
+help: Organize imports
+
+F401 [*] `sorrydave.mls.opcodes.ExternalSenderPackage` imported but unused
+  --> tests\test_opcodes_comprehensive.py:23:5
+   |
+21 |     OPCODE_SELECT_PROTOCOL_ACK,
+22 |     OPCODE_WELCOME,
+23 |     ExternalSenderPackage,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+24 |     build_commit_welcome,
+25 |     build_identify,
+   |
+help: Remove unused import: `sorrydave.mls.opcodes.ExternalSenderPackage`
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> tests\test_ratchet_comprehensive.py:3:1
+  |
+1 |   """Comprehensive key ratchet tests: derivation, caching, eviction, epoch advance, edge cases."""
+2 |
+3 | / import time
+4 | |
+5 | | import pytest
+6 | |
+7 | | from sorrydave.crypto.ratchet import KEY_LENGTH, RATCHET_LABEL, KeyRatchet, sender_base_secret_from_exporter
+  | |____________________________________________________________________________________________________________^
+  |
+help: Organize imports
+
+F401 [*] `sorrydave.crypto.ratchet.RATCHET_LABEL` imported but unused
+ --> tests\test_ratchet_comprehensive.py:7:50
+  |
+5 | import pytest
+6 |
+7 | from sorrydave.crypto.ratchet import KEY_LENGTH, RATCHET_LABEL, KeyRatchet, sender_base_secret_from_exporter
+  |                                                  ^^^^^^^^^^^^^
+  |
+help: Remove unused import: `sorrydave.crypto.ratchet.RATCHET_LABEL`
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_session_comprehensive.py:3:1
+   |
+ 1 |   """Comprehensive DaveSession tests: lifecycle, state transitions, error handling."""
+ 2 |
+ 3 | / import pytest
+ 4 | |
+ 5 | | from sorrydave.exceptions import InvalidCommitError
+ 6 | | from sorrydave.mls.group_state import (
+ 7 | |     create_key_package,
+ 8 | |     get_dave_crypto_provider,
+ 9 | | )
+10 | | from sorrydave.mls.opcodes import ExternalSenderPackage
+11 | | from sorrydave.session import DaveSession
+   | |_________________________________________^
+   |
+help: Organize imports
+
+F401 [*] `sorrydave.mls.group_state.create_key_package` imported but unused
+ --> tests\test_session_comprehensive.py:7:5
+  |
+5 | from sorrydave.exceptions import InvalidCommitError
+6 | from sorrydave.mls.group_state import (
+7 |     create_key_package,
+  |     ^^^^^^^^^^^^^^^^^^
+8 |     get_dave_crypto_provider,
+9 | )
+  |
+help: Remove unused import: `sorrydave.mls.group_state.create_key_package`
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_transform_comprehensive.py:3:1
+   |
+ 1 |   """Comprehensive frame encryptor/decryptor and protocol_frame_check tests."""
+ 2 |
+ 3 | / import pytest
+ 4 | |
+ 5 | | from sorrydave.crypto.cipher import DAVE_MAGIC, uleb128_encode
+ 6 | | from sorrydave.crypto.ratchet import KeyRatchet
+ 7 | | from sorrydave.exceptions import DecryptionError
+ 8 | | from sorrydave.media.transform import (
+ 9 | |     MIN_SUPPLEMENTAL,
+10 | |     SILENCE_PACKET,
+11 | |     FrameDecryptor,
+12 | |     FrameEncryptor,
+13 | |     _apply_h26x_start_code_expansion,
+14 | |     _build_supplemental_footer,
+15 | |     _contains_h26x_start_code,
+16 | |     _parse_supplemental_from_tail,
+17 | |     _replace_3byte_start_with_4byte,
+18 | |     protocol_frame_check,
+19 | | )
+20 | | from sorrydave.types import UnencryptedRange
+   | |____________________________________________^
+   |
+help: Organize imports
+
+F401 [*] `sorrydave.media.transform.MIN_SUPPLEMENTAL` imported but unused
+  --> tests\test_transform_comprehensive.py:9:5
+   |
+ 7 | from sorrydave.exceptions import DecryptionError
+ 8 | from sorrydave.media.transform import (
+ 9 |     MIN_SUPPLEMENTAL,
+   |     ^^^^^^^^^^^^^^^^
+10 |     SILENCE_PACKET,
+11 |     FrameDecryptor,
+   |
+help: Remove unused import: `sorrydave.media.transform.MIN_SUPPLEMENTAL`
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_types_exceptions.py:3:1
+   |
+ 1 |   """Comprehensive tests for types and exceptions modules."""
+ 2 |
+ 3 | / import pytest
+ 4 | |
+ 5 | | from sorrydave.exceptions import DaveProtocolError, DecryptionError, InvalidCommitError
+ 6 | | from sorrydave.types import (
+ 7 | |     DaveConfiguration,
+ 8 | |     IdentityConfig,
+ 9 | |     ProtocolSupplementalData,
+10 | |     UnencryptedRange,
+11 | | )
+   | |_^
+   |
+help: Organize imports
+
+B018 Found useless expression. Either assign it to a variable or remove it.
+  --> tests\test_types_exceptions.py:37:9
+   |
+35 |     def test_hashable(self):
+36 |         r = UnencryptedRange(offset=0, length=10)
+37 |         {r}  # should not raise
+   |         ^^^
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> tests\test_uleb128.py:1:1
+  |
+1 | / import pytest
+2 | | from sorrydave.crypto.cipher import uleb128_encode, uleb128_decode
+  | |__________________________________________________________________^
+  |
+help: Organize imports
+
+F401 [*] `pytest` imported but unused
+ --> tests\test_uleb128.py:1:8
+  |
+1 | import pytest
+  |        ^^^^^^
+2 | from sorrydave.crypto.cipher import uleb128_encode, uleb128_decode
+  |
+help: Remove unused import: `pytest`
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> tests\test_uleb128_comprehensive.py:3:1
+  |
+1 |   """Comprehensive ULEB128 tests: encoding, decoding, roundtrip, edge cases, and error conditions."""
+2 |
+3 | / import pytest
+4 | |
+5 | | from sorrydave.crypto.cipher import uleb128_decode, uleb128_encode
+  | |__________________________________________________________________^
+  |
+help: Organize imports
+
+Found 32 errors.
+[*] 26 fixable with the `--fix` option (2 hidden fixes can be enabled with the `--unsafe-fixes` option).
