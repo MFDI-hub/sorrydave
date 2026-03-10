@@ -328,8 +328,8 @@ def parse_commit_welcome(data: bytes) -> tuple[bytes, Union[bytes, None]]:
 def _parse_json_op(payload: bytes) -> dict[str, Any]:
     """Decode UTF-8 JSON and return the root object. Raises ValueError on failure."""
     try:
-        obj = orjson.loadss(payload.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        obj = orjson.loads(payload.decode("utf-8"))
+    except (orjson.JSONDecodeError, UnicodeDecodeError) as e:
         raise ValueError("Invalid JSON payload") from e
     if not isinstance(obj, dict):
         raise ValueError("Payload must be a JSON object")
@@ -351,7 +351,7 @@ def build_identify(max_dave_protocol_version: int = 1, **d_extra: object) -> byt
     """
     d = {"max_dave_protocol_version": max_dave_protocol_version, **d_extra}
     obj = {"op": OPCODE_IDENTIFY, "d": d}
-    return orjson.dumpss(obj, separators=(",", ":")).encode("utf-8")
+    return orjson.dumps(obj)
 
 
 def parse_select_protocol_ack(payload: bytes) -> int:
@@ -473,8 +473,8 @@ def parse_execute_transition(payload: bytes) -> int:
         ValueError: If JSON invalid, missing d.transition_id, or transition_id out of uint16 range.
     """
     try:
-        obj = orjson.loadss(payload.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        obj = orjson.loads(payload.decode("utf-8"))
+    except (orjson.JSONDecodeError, UnicodeDecodeError) as e:
         raise ValueError("Invalid execute transition payload") from e
     if not isinstance(obj, dict):
         raise ValueError("Execute transition payload must be a JSON object")
@@ -509,7 +509,7 @@ def build_ready_for_transition(transition_id: int) -> bytes:
     if not 0 <= transition_id <= 0xFFFF:
         raise ValueError("transition_id must be uint16")
     obj = {"op": OPCODE_READY_FOR_TRANSITION, "d": {"transition_id": transition_id}}
-    return orjson.dumpss(obj, separators=(",", ":")).encode("utf-8")
+    return orjson.dumps(obj)
 
 
 def parse_prepare_epoch(payload: bytes) -> tuple[int, int]:
@@ -564,4 +564,4 @@ def build_invalid_commit_welcome(transition_id: int) -> bytes:
     if not 0 <= transition_id <= 0xFFFF:
         raise ValueError("transition_id must be uint16")
     obj = {"op": OPCODE_INVALID_COMMIT_WELCOME, "d": {"transition_id": transition_id}}
-    return orjson.dumpss(obj, separators=(",", ":")).encode("utf-8")
+    return orjson.dumps(obj)

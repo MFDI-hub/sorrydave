@@ -84,12 +84,12 @@ def test_parse_execute_transition_transition_id_out_of_range():
 def test_build_invalid_commit_welcome_valid():
     """build_invalid_commit_welcome produces JSON with op 31 and d.transition_id."""
     out = build_invalid_commit_welcome(0)
-    obj = orjson.loadss(out.decode("utf-8"))
+    obj = orjson.loads(out.decode("utf-8"))
     assert obj["op"] == OPCODE_INVALID_COMMIT_WELCOME
     assert obj["d"]["transition_id"] == 0
 
     out = build_invalid_commit_welcome(32)
-    obj = orjson.loadss(out.decode("utf-8"))
+    obj = orjson.loads(out.decode("utf-8"))
     assert obj["d"]["transition_id"] == 32
 
 

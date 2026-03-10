@@ -317,16 +317,16 @@ class TestParseWelcomeMessage:
 
 class TestParseExecuteTransition:
     def test_valid(self):
-        payload = orjson.dumpss({"op": 22, "d": {"transition_id": 10}}).encode()
+        payload = orjson.dumps({"op": 22, "d": {"transition_id": 10}})
         assert parse_execute_transition(payload) == 10
 
     def test_missing_d(self):
-        payload = orjson.dumpss({"op": 22}).encode()
+        payload = orjson.dumps({"op": 22})
         with pytest.raises(ValueError, match="'d' object"):
             parse_execute_transition(payload)
 
     def test_missing_tid(self):
-        payload = orjson.dumpss({"op": 22, "d": {}}).encode()
+        payload = orjson.dumps({"op": 22, "d": {}})
         with pytest.raises(ValueError, match="transition_id"):
             parse_execute_transition(payload)
 
@@ -335,30 +335,30 @@ class TestParseExecuteTransition:
             parse_execute_transition(b"not json")
 
     def test_tid_out_of_range(self):
-        payload = orjson.dumpss({"op": 22, "d": {"transition_id": 0x10000}}).encode()
+        payload = orjson.dumps({"op": 22, "d": {"transition_id": 0x10000}})
         with pytest.raises(ValueError, match="uint16"):
             parse_execute_transition(payload)
 
     def test_tid_zero(self):
-        payload = orjson.dumpss({"op": 22, "d": {"transition_id": 0}}).encode()
+        payload = orjson.dumps({"op": 22, "d": {"transition_id": 0}})
         assert parse_execute_transition(payload) == 0
 
     def test_tid_max(self):
-        payload = orjson.dumpss({"op": 22, "d": {"transition_id": 0xFFFF}}).encode()
+        payload = orjson.dumps({"op": 22, "d": {"transition_id": 0xFFFF}})
         assert parse_execute_transition(payload) == 0xFFFF
 
     def test_d_is_array(self):
-        payload = orjson.dumpss({"op": 22, "d": [1, 2]}).encode()
+        payload = orjson.dumps({"op": 22, "d": [1, 2]})
         with pytest.raises(ValueError, match="'d' object"):
             parse_execute_transition(payload)
 
     def test_payload_is_array(self):
-        payload = orjson.dumpss([1, 2]).encode()
+        payload = orjson.dumps([1, 2])
         with pytest.raises(ValueError, match="JSON object"):
             parse_execute_transition(payload)
 
     def test_tid_string_coercion(self):
-        payload = orjson.dumpss({"op": 22, "d": {"transition_id": "10"}}).encode()
+        payload = orjson.dumps({"op": 22, "d": {"transition_id": "10"}})
         assert parse_execute_transition(payload) == 10
 
 
@@ -370,7 +370,7 @@ class TestParseExecuteTransition:
 class TestBuildInvalidCommitWelcome:
     def test_valid(self):
         result = build_invalid_commit_welcome(42)
-        obj = orjson.loadss(result)
+        obj = orjson.loads(result)
         assert obj["op"] == OPCODE_INVALID_COMMIT_WELCOME
         assert obj["d"]["transition_id"] == 42
 
@@ -382,7 +382,7 @@ class TestBuildInvalidCommitWelcome:
 
     def test_zero(self):
         result = build_invalid_commit_welcome(0)
-        obj = orjson.loadss(result)
+        obj = orjson.loads(result)
         assert obj["d"]["transition_id"] == 0
 
 
@@ -394,19 +394,19 @@ class TestBuildInvalidCommitWelcome:
 class TestBuildIdentify:
     def test_basic(self):
         result = build_identify(1)
-        obj = orjson.loadss(result)
+        obj = orjson.loads(result)
         assert obj["op"] == OPCODE_IDENTIFY
         assert obj["d"]["max_dave_protocol_version"] == 1
 
     def test_extra_fields(self):
         result = build_identify(1, server_id="123", user_id="456")
-        obj = orjson.loadss(result)
+        obj = orjson.loads(result)
         assert obj["d"]["server_id"] == "123"
         assert obj["d"]["user_id"] == "456"
 
     def test_custom_version(self):
         result = build_identify(2)
-        obj = orjson.loadss(result)
+        obj = orjson.loads(result)
         assert obj["d"]["max_dave_protocol_version"] == 2
 
 
@@ -417,21 +417,21 @@ class TestBuildIdentify:
 
 class TestParseSelectProtocolAck:
     def test_valid(self):
-        payload = orjson.dumpss({"op": 4, "d": {"dave_protocol_version": 1}}).encode()
+        payload = orjson.dumps({"op": 4, "d": {"dave_protocol_version": 1}})
         assert parse_select_protocol_ack(payload) == 1
 
     def test_missing_d(self):
-        payload = orjson.dumpss({"op": 4}).encode()
+        payload = orjson.dumps({"op": 4})
         with pytest.raises(ValueError, match="'d' object"):
             parse_select_protocol_ack(payload)
 
     def test_missing_version(self):
-        payload = orjson.dumpss({"op": 4, "d": {}}).encode()
+        payload = orjson.dumps({"op": 4, "d": {}})
         with pytest.raises(ValueError, match="dave_protocol_version"):
             parse_select_protocol_ack(payload)
 
     def test_string_coercion(self):
-        payload = orjson.dumpss({"op": 4, "d": {"dave_protocol_version": "1"}}).encode()
+        payload = orjson.dumps({"op": 4, "d": {"dave_protocol_version": "1"}})
         assert parse_select_protocol_ack(payload) == 1
 
     def test_invalid_json(self):
@@ -446,21 +446,21 @@ class TestParseSelectProtocolAck:
 
 class TestParseClientsConnect:
     def test_valid(self):
-        payload = orjson.dumpss({"op": 11, "d": {"user_ids": ["123", "456"]}}).encode()
+        payload = orjson.dumps({"op": 11, "d": {"user_ids": ["123", "456"]}})
         result = parse_clients_connect(payload)
         assert result == ["123", "456"]
 
     def test_empty_list(self):
-        payload = orjson.dumpss({"op": 11, "d": {"user_ids": []}}).encode()
+        payload = orjson.dumps({"op": 11, "d": {"user_ids": []}})
         assert parse_clients_connect(payload) == []
 
     def test_not_strings(self):
-        payload = orjson.dumpss({"op": 11, "d": {"user_ids": [123]}}).encode()
+        payload = orjson.dumps({"op": 11, "d": {"user_ids": [123]}})
         with pytest.raises(ValueError, match="strings"):
             parse_clients_connect(payload)
 
     def test_missing_user_ids(self):
-        payload = orjson.dumpss({"op": 11, "d": {}}).encode()
+        payload = orjson.dumps({"op": 11, "d": {}})
         with pytest.raises(ValueError, match="list"):
             parse_clients_connect(payload)
 
@@ -472,16 +472,16 @@ class TestParseClientsConnect:
 
 class TestParseClientDisconnect:
     def test_valid(self):
-        payload = orjson.dumpss({"op": 13, "d": {"user_id": "789"}}).encode()
+        payload = orjson.dumps({"op": 13, "d": {"user_id": "789"}})
         assert parse_client_disconnect(payload) == "789"
 
     def test_not_string(self):
-        payload = orjson.dumpss({"op": 13, "d": {"user_id": 789}}).encode()
+        payload = orjson.dumps({"op": 13, "d": {"user_id": 789}})
         with pytest.raises(ValueError, match="string"):
             parse_client_disconnect(payload)
 
     def test_missing(self):
-        payload = orjson.dumpss({"op": 13, "d": {}}).encode()
+        payload = orjson.dumps({"op": 13, "d": {}})
         with pytest.raises(ValueError, match="string"):
             parse_client_disconnect(payload)
 
@@ -493,36 +493,36 @@ class TestParseClientDisconnect:
 
 class TestParsePrepareTransition:
     def test_valid(self):
-        payload = orjson.dumpss(
+        payload = orjson.dumps(
             {"op": 21, "d": {"protocol_version": 1, "transition_id": 5}}
-        ).encode()
+        )
         pv, tid = parse_prepare_transition(payload)
         assert pv == 1
         assert tid == 5
 
     def test_transition_id_zero(self):
-        payload = orjson.dumpss(
+        payload = orjson.dumps(
             {"op": 21, "d": {"protocol_version": 1, "transition_id": 0}}
-        ).encode()
+        )
         _, tid = parse_prepare_transition(payload)
         assert tid == 0
 
     def test_missing_fields(self):
-        payload = orjson.dumpss({"op": 21, "d": {}}).encode()
+        payload = orjson.dumps({"op": 21, "d": {}})
         with pytest.raises(ValueError, match="required"):
             parse_prepare_transition(payload)
 
     def test_tid_out_of_range(self):
-        payload = orjson.dumpss(
+        payload = orjson.dumps(
             {"op": 21, "d": {"protocol_version": 1, "transition_id": 0x10000}}
-        ).encode()
+        )
         with pytest.raises(ValueError, match="uint16"):
             parse_prepare_transition(payload)
 
     def test_negative_tid(self):
-        payload = orjson.dumpss(
+        payload = orjson.dumps(
             {"op": 21, "d": {"protocol_version": 1, "transition_id": -1}}
-        ).encode()
+        )
         with pytest.raises(ValueError, match="uint16"):
             parse_prepare_transition(payload)
 
@@ -535,7 +535,7 @@ class TestParsePrepareTransition:
 class TestBuildReadyForTransition:
     def test_valid(self):
         result = build_ready_for_transition(10)
-        obj = orjson.loadss(result)
+        obj = orjson.loads(result)
         assert obj["op"] == OPCODE_READY_FOR_TRANSITION
         assert obj["d"]["transition_id"] == 10
 
@@ -547,7 +547,7 @@ class TestBuildReadyForTransition:
 
     def test_zero(self):
         result = build_ready_for_transition(0)
-        obj = orjson.loadss(result)
+        obj = orjson.loads(result)
         assert obj["d"]["transition_id"] == 0
 
 
@@ -558,18 +558,18 @@ class TestBuildReadyForTransition:
 
 class TestParsePrepareEpoch:
     def test_valid(self):
-        payload = orjson.dumpss({"op": 24, "d": {"protocol_version": 1, "epoch": 1}}).encode()
+        payload = orjson.dumps({"op": 24, "d": {"protocol_version": 1, "epoch": 1}})
         pv, epoch = parse_prepare_epoch(payload)
         assert pv == 1
         assert epoch == 1
 
     def test_epoch_zero(self):
-        payload = orjson.dumpss({"op": 24, "d": {"protocol_version": 1, "epoch": 0}}).encode()
+        payload = orjson.dumps({"op": 24, "d": {"protocol_version": 1, "epoch": 0}})
         _, epoch = parse_prepare_epoch(payload)
         assert epoch == 0
 
     def test_missing_fields(self):
-        payload = orjson.dumpss({"op": 24, "d": {}}).encode()
+        payload = orjson.dumps({"op": 24, "d": {}})
         with pytest.raises(ValueError, match="required"):
             parse_prepare_epoch(payload)
 

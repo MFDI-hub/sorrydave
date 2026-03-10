@@ -163,7 +163,7 @@ class TestRealJsonOp0Identify:
     """Parse real op 0 (identify) from idk capture."""
 
     def test_parse_json(self):
-        obj = orjson.loadss(JSON_OP0_IDK)
+        obj = orjson.loads(JSON_OP0_IDK)
         assert obj["op"] == 0
         d = obj["d"]
         assert d["user_id"] == "256062279974387723"
@@ -172,7 +172,7 @@ class TestRealJsonOp0Identify:
         assert d["video"] is True
 
     def test_streams(self):
-        obj = orjson.loadss(JSON_OP0_IDK)
+        obj = orjson.loads(JSON_OP0_IDK)
         streams = obj["d"]["streams"]
         assert len(streams) == 2
         qualities = {s["quality"] for s in streams}
@@ -183,7 +183,7 @@ class TestRealJsonOp4SessionDescription:
     """Parse real op 4 (select_protocol_ack) from idk capture."""
 
     def test_parse_json(self):
-        obj = orjson.loadss(JSON_OP4_IDK)
+        obj = orjson.loads(JSON_OP4_IDK)
         assert obj["op"] == 4
 
     def test_dave_protocol_version(self):
@@ -191,7 +191,7 @@ class TestRealJsonOp4SessionDescription:
         assert dave_ver == 1
 
     def test_secret_key_is_32_bytes(self):
-        obj = orjson.loadss(JSON_OP4_IDK)
+        obj = orjson.loads(JSON_OP4_IDK)
         key = obj["d"]["secret_key"]
         assert len(key) == 32
         assert all(0 <= b <= 255 for b in key)
@@ -199,16 +199,16 @@ class TestRealJsonOp4SessionDescription:
         assert len(key_bytes) == 32
 
     def test_mode_is_aead_aes256_gcm(self):
-        obj = orjson.loadss(JSON_OP4_IDK)
+        obj = orjson.loads(JSON_OP4_IDK)
         assert obj["d"]["mode"] == "aead_aes256_gcm_rtpsize"
 
     def test_codecs(self):
-        obj = orjson.loadss(JSON_OP4_IDK)
+        obj = orjson.loads(JSON_OP4_IDK)
         assert obj["d"]["audio_codec"] == "opus"
         assert obj["d"]["video_codec"] == "H265"
 
     def test_secret_key_bytes_match_capture(self):
-        obj = orjson.loadss(JSON_OP4_IDK)
+        obj = orjson.loads(JSON_OP4_IDK)
         expected = [
             254,
             118,
@@ -250,19 +250,19 @@ class TestRealJsonOp2Ready:
     """Parse real op 2 (ready) from idk capture."""
 
     def test_ssrc_and_port(self):
-        obj = orjson.loadss(JSON_OP2_IDK)
+        obj = orjson.loads(JSON_OP2_IDK)
         d = obj["d"]
         assert d["ssrc"] == 7276
         assert d["port"] == 19311
         assert d["ip"] == "104.29.151.192"
 
     def test_modes(self):
-        obj = orjson.loadss(JSON_OP2_IDK)
+        obj = orjson.loads(JSON_OP2_IDK)
         modes = obj["d"]["modes"]
         assert "aead_aes256_gcm_rtpsize" in modes
 
     def test_video_streams(self):
-        obj = orjson.loadss(JSON_OP2_IDK)
+        obj = orjson.loads(JSON_OP2_IDK)
         streams = obj["d"]["streams"]
         assert len(streams) == 2
         for s in streams:
