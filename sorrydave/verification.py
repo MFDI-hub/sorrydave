@@ -6,7 +6,7 @@ Stores verified public keys per user for identity verification (protocol.md
 differs from the previously verified key.
 """
 
-import json
+import orjson
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -122,7 +122,7 @@ class VerificationStore:
             ]
         }
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            orjson.dumps(data, f, indent=2)
 
     def load_from_path(self, path: str) -> None:
         """
@@ -140,7 +140,7 @@ class VerificationStore:
         if not os.path.isfile(path):
             return
         with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+            data = orjson.loads(f)
         for item in data.get("entries", []):
             user_id = int(item["user_id"])
             public_key = base64.b64decode(item["public_key"])

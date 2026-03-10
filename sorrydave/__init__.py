@@ -23,11 +23,16 @@ from sorrydave.types import (
     UnencryptedRange,
 )
 from sorrydave.verification import VerificationStore, VerifiedIdentity
+from sorrydave._rfc9420 import DefaultCryptoProvider, Group, SenderType, TLSDecodeError
 
 __all__ = [
     "DaveProtocolError",
     "DecryptionError",
+    "DefaultCryptoProvider",
+    "Group",
     "InvalidCommitError",
+    "SenderType",
+    "TLSDecodeError",
     "UnencryptedRange",
     "ProtocolSupplementalData",
     "DaveConfiguration",
@@ -47,4 +52,4 @@ __all__ = [
     "VerificationStore",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

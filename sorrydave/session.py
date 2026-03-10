@@ -20,8 +20,7 @@ from sorrydave.mls.group_state import (
 from sorrydave.mls.opcodes import ExternalSenderPackage, parse_external_sender_package
 
 if TYPE_CHECKING:
-    from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
-    from rfc9420.mls.group import Group
+    from sorrydave._rfc9420 import DefaultCryptoProvider, Group
 
 
 class DaveSession:
@@ -125,6 +124,9 @@ class DaveSession:
         """
         Prepare for new epoch (e.g. after select_protocol_ack or prepare_epoch).
 
+        Opcode 24 (dave_protocol_prepare_epoch) uses JSON field "epoch"; protocol.md
+        sometimes refers to this as "epoch_id".
+
         Args:
             epoch_id (int): Epoch identifier. Only epoch_id == 1 triggers key package creation.
 
@@ -215,18 +217,35 @@ class DaveSession:
             return None
         if proposals_msg.operation_type != 0 or not proposals_msg.proposal_messages:
             return None
-        from rfc9420 import SenderType
-        from rfc9420.protocol.data_structures import AddProposal, Proposal, ProposalType
-        from rfc9420.protocol.key_packages import KeyPackage
-        from rfc9420.protocol.messages import MLSPlaintext as MLSPlaintextRfc
-
-        from sorrydave.mls.opcodes import split_proposal_messages_vector
+        from sorrydave._rfc9420 import (
+            AddProposal,
+            KeyPackage,
+            MLSPlaintext as MLSPlaintextRfc,
+            Proposal,
+            ProposalType,
+            SenderType,
+        )
 
         allowed_proposal_types = {ProposalType.ADD, ProposalType.REMOVE}
         vector_blob = proposals_msg.proposal_messages[0]
-        for msg_bytes in split_proposal_messages_vector(vector_blob):
+
+        # Discord sends the proposals vector as concatenated MLSPlaintext
+        # structures (no per-element varint length prefix). Parse them directly.
+        mls_messages: list[MLSPlaintextRfc] = []
+        try:
+            msg = MLSPlaintextRfc.deserialize(vector_blob)
+            mls_messages.append(msg)
+        except Exception:
+            # Fallback: try opaque<V> splitting for forward compatibility.
+            from sorrydave.mls.opcodes import split_proposal_messages_vector
+            for chunk in split_proposal_messages_vector(vector_blob):
+                try:
+                    mls_messages.append(MLSPlaintextRfc.deserialize(chunk))
+                except Exception:
+                    continue
+
+        for msg in mls_messages:
             try:
-                msg = MLSPlaintextRfc.deserialize(msg_bytes)
                 sender = msg.auth_content.tbs.framed_content.sender
                 if sender.sender_type != SenderType.EXTERNAL:
                     continue
@@ -287,15 +306,12 @@ class DaveSession:
 
         if self._group is None:
             raise InvalidCommitError("No group to apply commit to")
-        # Client commit validity: without established group (epoch 0), only accept our own initial commit
+        # Client commit validity (protocol.md): epoch 0 → only accept our own initial commit;
+        # apply_commit also enforces that all proposals are references (no inline proposals).
         if self._current_epoch == 0 and self._initial_commit_bytes is not None:
             if commit_bytes != self._initial_commit_bytes:
                 raise InvalidCommitError("Commit does not match initial local group commit")
-        from rfc9420.protocol.messages import MLSPlaintext
-
-        msg = MLSPlaintext.deserialize(commit_bytes)
-        sender_leaf_index = msg.auth_content.tbs.framed_content.sender.sender
-        apply_commit(self._group, commit_bytes, sender_leaf_index)
+        apply_commit(self._group, commit_bytes)
         self._initial_commit_bytes = None
         self._current_epoch += 1
         self._refresh_receive_ratchets()

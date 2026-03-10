@@ -28,8 +28,7 @@ from typing import TYPE_CHECKING, Union
 from sorrydave.exceptions import InvalidCommitError
 
 if TYPE_CHECKING:
-    from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
-    from rfc9420.mls.group import Group
+    from sorrydave._rfc9420 import DefaultCryptoProvider, Group
 
 # DAVE protocol v1: MLS ciphersuite 2 (DHKEMP256_AES128GCM_SHA256_P256)
 DAVE_MLS_CIPHERSUITE_ID = 2
@@ -39,37 +38,17 @@ EXTENSION_TYPE_EXTERNAL_SENDERS = 0x0002
 
 
 def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
-    """Read MLS-style varint from data at offset. Returns (value, new_offset)."""
-    if offset >= len(data):
-        raise ValueError("Varint truncated")
-    first = data[offset]
-    prefix = first >> 6
-    if prefix == 0b00:
-        return first & 0x3F, offset + 1
-    if prefix == 0b01:
-        if offset + 2 > len(data):
-            raise ValueError("Varint truncated")
-        value = ((first & 0x3F) << 8) | data[offset + 1]
-        return value, offset + 2
-    if prefix == 0b10:
-        if offset + 4 > len(data):
-            raise ValueError("Varint truncated")
-        value = (
-            ((first & 0x3F) << 24)
-            | (data[offset + 1] << 16)
-            | (data[offset + 2] << 8)
-            | data[offset + 3]
-        )
-        return value, offset + 4
-    raise ValueError("Varint overflow")
+    """Read MLS-style varint from data at offset; delegates to sorrydave._rfc9420 (rfc9420.codec.tls)."""
+    from sorrydave._rfc9420 import read_varint
+
+    return read_varint(data, offset)
 
 
 def _read_opaque_varint(data: bytes, offset: int) -> tuple[bytes, int]:
-    """Read opaque<V>: varint length then that many bytes."""
-    length, pos = _read_varint(data, offset)
-    if pos + length > len(data):
-        raise ValueError("Opaque truncated")
-    return data[pos : pos + length], pos + length
+    """Read opaque<V>: varint length then that many bytes; delegates to sorrydave._rfc9420 (rfc9420.codec.tls)."""
+    from sorrydave._rfc9420 import read_opaque_varint
+
+    return read_opaque_varint(data, offset)
 
 
 def get_dave_crypto_provider() -> DefaultCryptoProvider:
@@ -81,7 +60,7 @@ def get_dave_crypto_provider() -> DefaultCryptoProvider:
     Returns:
         DefaultCryptoProvider: Instance for DHKEMP256_AES128GCM_SHA256_P256.
     """
-    from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+    from sorrydave._rfc9420 import DefaultCryptoProvider
 
     return DefaultCryptoProvider(suite_id=DAVE_MLS_CIPHERSUITE_ID)
 
@@ -109,15 +88,17 @@ def create_key_package(
     if crypto is None:
         crypto = get_dave_crypto_provider()
 
-    from rfc9420.crypto.ciphersuites import get_ciphersuite_by_id
-    from rfc9420.protocol.data_structures import (
+    from sorrydave._rfc9420 import (
         CipherSuite,
         Credential,
         CredentialType,
+        KeyPackage,
+        LeafNode,
+        LeafNodeSource,
         MLSVersion,
         Signature,
+        get_ciphersuite_by_id,
     )
-    from rfc9420.protocol.key_packages import KeyPackage, LeafNode, LeafNodeSource
 
     cs = get_ciphersuite_by_id(DAVE_MLS_CIPHERSUITE_ID)
     if cs is None:
@@ -197,19 +178,17 @@ def create_key_package(
 
 
 def _write_varint(x: int) -> bytes:
-    """RFC 9420 variable-length integer encoding."""
-    if x < 0x40:
-        return bytes([x])
-    if x < 0x4000:
-        return (x | 0x4000).to_bytes(2, "big")
-    if x <= 0x3FFFFFFF:
-        return (x | 0x80000000).to_bytes(4, "big")
-    raise ValueError("integer too large for RFC 9420 varint")
+    """RFC 9420 variable-length integer encoding; delegates to sorrydave._rfc9420 (rfc9420.codec.tls)."""
+    from sorrydave._rfc9420 import write_varint
+
+    return write_varint(x)
 
 
 def _write_opaque_varint(data: bytes) -> bytes:
-    """Encode opaque<V>: varint length prefix + data."""
-    return _write_varint(len(data)) + data
+    """Encode opaque<V>: varint length prefix + data; delegates to sorrydave._rfc9420 (rfc9420.codec.tls)."""
+    from sorrydave._rfc9420 import write_opaque_varint
+
+    return write_opaque_varint(data)
 
 
 def serialize_external_senders_extension(
@@ -226,12 +205,14 @@ def serialize_external_senders_extension(
         ExternalSender { SignaturePublicKey signature_key; Credential credential; }
         Credential { uint16 credential_type; opaque identity<V>; }
     """
-    ext_sender = _write_opaque_varint(signature_key)
+    from sorrydave._rfc9420 import write_opaque_varint
+
+    ext_sender = write_opaque_varint(signature_key)
     ext_sender += struct.pack("!H", credential_type)
-    ext_sender += _write_opaque_varint(identity)
-    ext_senders_list = _write_opaque_varint(ext_sender)
+    ext_sender += write_opaque_varint(identity)
+    ext_senders_list = write_opaque_varint(ext_sender)
     extension = struct.pack("!H", EXTENSION_TYPE_EXTERNAL_SENDERS)
-    extension += _write_opaque_varint(ext_senders_list)
+    extension += write_opaque_varint(ext_senders_list)
     return extension
 
 
@@ -259,6 +240,8 @@ def get_external_senders_from_group(group: Group) -> list[tuple[bytes, int, byte
     if not data:
         return []
     try:
+        from sorrydave._rfc9420 import parse_external_senders, read_opaque_varint
+
         n_ext, pos = _read_varint(data, 0)
         result: list[tuple[bytes, int, bytes]] = []
         for _ in range(n_ext):
@@ -266,20 +249,22 @@ def get_external_senders_from_group(group: Group) -> list[tuple[bytes, int, byte
                 break
             ext_type = struct.unpack("!H", data[pos : pos + 2])[0]
             pos += 2
-            ext_data, pos = _read_opaque_varint(data, pos)
+            ext_data, pos = read_opaque_varint(data, pos)
             if ext_type != EXTENSION_TYPE_EXTERNAL_SENDERS:
                 continue
-            ext_senders_list, off = _read_opaque_varint(ext_data, 0)
-            if off != len(ext_data):
+            try:
+                senders = parse_external_senders(ext_data)
+            except Exception:
                 continue
-            while off < len(ext_senders_list):
-                sig_key, off = _read_opaque_varint(ext_senders_list, off)
-                if off + 2 > len(ext_senders_list):
-                    break
-                cred_type = struct.unpack("!H", ext_senders_list[off : off + 2])[0]
-                off += 2
-                identity, off = _read_opaque_varint(ext_senders_list, off)
-                result.append((sig_key, cred_type, identity))
+            for es in senders:
+                if len(es.credential_data) < 2:
+                    continue
+                cred_type = struct.unpack("!H", es.credential_data[:2])[0]
+                try:
+                    identity, _ = read_opaque_varint(es.credential_data, 2)
+                except Exception:
+                    continue
+                result.append((es.signature_key, cred_type, identity))
         return result
     except Exception:
         return []
@@ -314,10 +299,16 @@ def validate_group_dave_ciphersuite_and_extensions(group: Group) -> None:
         if pos + 2 > len(data):
             raise InvalidCommitError("Group extensions truncated")
         ext_type = struct.unpack("!H", data[pos : pos + 2])[0]
+        pos += 2
         if ext_type != EXTENSION_TYPE_EXTERNAL_SENDERS:
             raise InvalidCommitError(
                 f"Group extension must be external_senders (0x0002); got 0x{ext_type:04x}"
             )
+        from sorrydave._rfc9420 import read_opaque_varint
+
+        ext_data, pos = read_opaque_varint(data, pos)
+        if pos != len(data):
+            raise InvalidCommitError("Group extensions truncated")
     except InvalidCommitError:
         raise
     except Exception as e:
@@ -366,8 +357,7 @@ def create_group(
     """
     if crypto is None:
         crypto = get_dave_crypto_provider()
-    from rfc9420.mls.group import Group
-    from rfc9420.protocol.key_packages import KeyPackage
+    from sorrydave._rfc9420 import Group, KeyPackage
 
     initial_extensions = b""
     if external_sender_signature_key is not None and external_sender_identity is not None:
@@ -378,7 +368,10 @@ def create_group(
         )
 
     kp = KeyPackage.deserialize(key_package_bytes)
-    return Group.create(group_id, kp, crypto, initial_extensions=initial_extensions)
+    group = Group.create(group_id, kp, crypto, initial_extensions=initial_extensions)
+    if external_sender_signature_key is not None and hasattr(group, "set_external_sender_keys"):
+        group.set_external_sender_keys([external_sender_signature_key])
+    return group
 
 
 def join_from_welcome(
@@ -401,8 +394,7 @@ def join_from_welcome(
     """
     if crypto is None:
         crypto = get_dave_crypto_provider()
-    from rfc9420.mls.group import Group
-    from rfc9420.protocol.data_structures import Welcome
+    from sorrydave._rfc9420 import Group, Welcome
 
     welcome = Welcome.deserialize(welcome_bytes)
     return Group.join_from_welcome(welcome, hpke_private_key, crypto)
@@ -449,25 +441,55 @@ def _check_no_duplicate_credentials(group: Group) -> None:
         return
 
 
-def apply_commit(group: Group, commit_mls_plaintext_bytes: bytes, sender_leaf_index: int) -> None:
+def _validate_commit_proposal_refs_only(commit_mls_plaintext_bytes: bytes) -> None:
+    """
+    Client Commit Validity (protocol.md): refuse commits that include inline proposals.
+
+    DAVE requires all included proposals to be proposal references (not inline).
+    Raises InvalidCommitError if any proposal in the commit is inline.
+    """
+    from sorrydave._rfc9420 import Commit, ContentType, MLSPlaintext, ProposalOrRefType
+
+    msg = MLSPlaintext.deserialize(commit_mls_plaintext_bytes)
+    content = msg.auth_content.tbs.framed_content
+    if content.content_type != ContentType.COMMIT:
+        return
+    commit = Commit.deserialize(content.content)
+    for prop in commit.proposals:
+        if prop.typ == ProposalOrRefType.PROPOSAL:
+            raise InvalidCommitError(
+                "DAVE requires all commit proposals to be proposal references (no inline proposals)"
+            )
+
+
+def apply_commit(
+    group: Group,
+    commit_mls_plaintext_bytes: bytes,
+    sender_leaf_index: Union[int, None] = None,
+) -> None:
     """
     Apply a received commit to the group.
 
-    Used by DaveSession when handle_commit is called. Per DAVE client commit validity,
-    raises InvalidCommitError if the resulting group would have duplicate basic
-    credentials (user IDs).
+    Used by DaveSession when handle_commit is called. Per protocol.md Client Commit Validity:
+    - All included proposals must be proposal references (no inline proposals).
+    - The resulting group must not have duplicate basic credentials (user IDs).
+    Raises InvalidCommitError if either check fails or if commit application fails.
 
     Args:
         group (Group): rfc9420 Group instance.
         commit_mls_plaintext_bytes (bytes): Serialized MLS Plaintext commit message.
-        sender_leaf_index (int): Leaf index of the commit sender.
+        sender_leaf_index (Union[int, None]): Leaf index of the commit sender; if None,
+            obtained via rfc9420.get_commit_sender_leaf_index(commit_mls_plaintext_bytes).
 
     Raises:
-        InvalidCommitError: If commit application fails or duplicate credentials.
+        InvalidCommitError: If commit application fails or Client Commit Validity is violated.
     """
     try:
-        from rfc9420.protocol.messages import MLSPlaintext
+        from sorrydave._rfc9420 import get_commit_sender_leaf_index, MLSPlaintext
 
+        _validate_commit_proposal_refs_only(commit_mls_plaintext_bytes)
+        if sender_leaf_index is None:
+            sender_leaf_index = get_commit_sender_leaf_index(commit_mls_plaintext_bytes)
         msg = MLSPlaintext.deserialize(commit_mls_plaintext_bytes)
         group.apply_commit(msg, sender_leaf_index)
         _check_no_duplicate_credentials(group)
@@ -495,8 +517,7 @@ def process_proposal(
         sender_leaf_index (int): Leaf index of the sender.
         sender_type (int): 1 = MEMBER, 2 = EXTERNAL. Defaults to 1.
     """
-    from rfc9420 import SenderType
-    from rfc9420.protocol.messages import MLSPlaintext
+    from sorrydave._rfc9420 import MLSPlaintext, SenderType
 
     msg = MLSPlaintext.deserialize(proposal_mls_plaintext_bytes)
     st = SenderType.EXTERNAL if sender_type == 2 else SenderType.MEMBER
@@ -517,7 +538,7 @@ def create_commit_and_welcome(group: Group, signing_key_der: bytes) -> tuple[byt
         tuple[bytes, list[bytes]]: (serialized commit plaintext, list of serialized Welcome bytes).
     """
 
-    commit_plaintext, welcomes = group.commit(signing_key_der)
+    commit_plaintext, welcomes = group.commit(signing_key_der, return_per_joiner_welcomes=True)
     commit_bytes: bytes = commit_plaintext.serialize()
     welcome_list: list[bytes] = [w.serialize() for w in welcomes]
     return (commit_bytes, welcome_list)
@@ -563,13 +584,14 @@ def create_update_proposal(
     """
     if crypto is None:
         crypto = get_dave_crypto_provider()
-    from rfc9420.crypto.ciphersuites import get_ciphersuite_by_id
-    from rfc9420.protocol.data_structures import (
+    from sorrydave._rfc9420 import (
         Credential,
         CredentialType,
+        LeafNode,
+        LeafNodeSource,
         Signature,
+        get_ciphersuite_by_id,
     )
-    from rfc9420.protocol.key_packages import LeafNode, LeafNodeSource
 
     cs = get_ciphersuite_by_id(DAVE_MLS_CIPHERSUITE_ID)
     if cs is None:

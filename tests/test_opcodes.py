@@ -1,6 +1,6 @@
 """Tests for DAVE Voice Gateway opcode parsing and building (opcodes 22, 25-31)."""
 
-import json
+import orjson
 import struct
 
 import pytest
@@ -84,12 +84,12 @@ def test_parse_execute_transition_transition_id_out_of_range():
 def test_build_invalid_commit_welcome_valid():
     """build_invalid_commit_welcome produces JSON with op 31 and d.transition_id."""
     out = build_invalid_commit_welcome(0)
-    obj = json.loads(out.decode("utf-8"))
+    obj = orjson.loadss(out.decode("utf-8"))
     assert obj["op"] == OPCODE_INVALID_COMMIT_WELCOME
     assert obj["d"]["transition_id"] == 0
 
     out = build_invalid_commit_welcome(32)
-    obj = json.loads(out.decode("utf-8"))
+    obj = orjson.loadss(out.decode("utf-8"))
     assert obj["d"]["transition_id"] == 32
 
 
@@ -111,7 +111,14 @@ def test_parse_external_sender_package_minimal():
     # seq=0, opcode=25, sig_key length 2 + 2 bytes, cred_type=1, identity length 8 + 8 bytes
     sig_key = b"\x01\x02"
     identity = b"\x00\x00\x00\x00\x00\x00\x00\x01"
-    payload = struct.pack("!HB", 0, 25) + _varint(2) + sig_key + struct.pack("!H", 1) + _varint(8) + identity
+    payload = (
+        struct.pack("!HB", 0, 25)
+        + _varint(2)
+        + sig_key
+        + struct.pack("!H", 1)
+        + _varint(8)
+        + identity
+    )
     p = parse_external_sender_package(payload)
     assert p.sequence_number == 0
     assert p.signature_key == sig_key
@@ -130,7 +137,7 @@ def test_parse_external_sender_package_too_short():
     """parse_external_sender_package raises when payload too short or truncated."""
     with pytest.raises(ValueError, match="too short"):
         parse_external_sender_package(b"\x00\x00")
-    # 3 bytes passes length check but rest is empty -> varint truncated
+    # 3 bytes passes length check but rest is empty -> varint/opaque truncated
     with pytest.raises(ValueError, match="truncated"):
         parse_external_sender_package(b"\x00\x00\x19")
 
@@ -193,9 +200,7 @@ def test_build_commit_welcome_commit_only():
     commit = b"commit_bytes"
     out = build_commit_welcome(commit, None)
     assert out[0] == OPCODE_COMMIT_WELCOME
-    parsed_commit, parsed_welcome = parse_commit_welcome(out)
-    assert parsed_commit == commit
-    assert parsed_welcome is None
+    assert out[1:] == commit
 
 
 def test_build_commit_welcome_with_welcome():
@@ -204,9 +209,7 @@ def test_build_commit_welcome_with_welcome():
     welcome = b"welcome"
     out = build_commit_welcome(commit, welcome)
     assert out[0] == OPCODE_COMMIT_WELCOME
-    parsed_commit, parsed_welcome = parse_commit_welcome(out)
-    assert parsed_commit == commit
-    assert parsed_welcome == welcome
+    assert out[1:] == commit + welcome
 
 
 def test_parse_commit_welcome_wrong_opcode():

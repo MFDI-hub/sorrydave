@@ -45,7 +45,7 @@ def group_with_ext(crypto, key_package_tuple):
         b"test-group",
         kp_bytes,
         crypto,
-        external_sender_signature_key=b"\xAA" * 65,
+        external_sender_signature_key=b"\xaa" * 65,
         external_sender_credential_type=1,
         external_sender_identity=b"\x00" * 8,
     )
@@ -176,7 +176,7 @@ class TestOpaqueVarintGroupState:
 class TestSerializeExternalSendersExtension:
     def test_basic(self):
         result = serialize_external_senders_extension(
-            signature_key=b"\xAA" * 32,
+            signature_key=b"\xaa" * 32,
             credential_type=1,
             identity=b"\x00" * 8,
         )
@@ -185,11 +185,12 @@ class TestSerializeExternalSendersExtension:
 
     def test_contains_extension_type(self):
         result = serialize_external_senders_extension(
-            signature_key=b"\xBB" * 32,
+            signature_key=b"\xbb" * 32,
             credential_type=1,
             identity=b"\x01" * 8,
         )
         import struct
+
         ext_type = struct.unpack("!H", result[:2])[0]
         assert ext_type == EXTENSION_TYPE_EXTERNAL_SENDERS
 

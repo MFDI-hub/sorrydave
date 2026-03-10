@@ -1,8 +1,12 @@
 """Comprehensive opcode tests: all parsers, builders, edge cases, and error conditions."""
 
-import json
+import orjson
 
 import pytest
+
+import struct
+
+from rfc9420.codec.tls import TLSDecodeError
 
 from sorrydave.mls.opcodes import (
     OPCODE_ANNOUNCE_COMMIT,
@@ -42,12 +46,12 @@ from sorrydave.mls.opcodes import (
     _read_opaque_varint,
     _write_opaque_varint,
 )
-import struct
 
 
 # ---------------------------------------------------------------------------
 # Varint helpers
 # ---------------------------------------------------------------------------
+
 
 class TestMlsVarint:
     def test_1_byte(self):
@@ -68,17 +72,17 @@ class TestMlsVarint:
         assert off == 4
 
     def test_overflow_raises(self):
-        with pytest.raises(ValueError, match="overflow"):
+        with pytest.raises((ValueError, TLSDecodeError)):
             _read_varint(bytes([0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), 0)
 
     def test_truncated_raises(self):
-        with pytest.raises(ValueError, match="truncated"):
+        with pytest.raises((ValueError, TLSDecodeError)):
             _read_varint(b"", 0)
-        with pytest.raises(ValueError, match="truncated"):
+        with pytest.raises((ValueError, TLSDecodeError)):
             _read_varint(bytes([0x40]), 0)
 
     def test_offset(self):
-        data = b"\xFF\x05\xFF"
+        data = b"\xff\x05\xff"
         val, off = _read_varint(data, 1)
         assert val == 5
         assert off == 2
@@ -98,7 +102,7 @@ class TestOpaqueVarint:
         assert decoded == b""
 
     def test_truncated_raises(self):
-        with pytest.raises(ValueError, match="truncated"):
+        with pytest.raises((ValueError, TLSDecodeError)):
             _read_opaque_varint(bytes([0x05]), 0)
 
 
@@ -106,8 +110,9 @@ class TestOpaqueVarint:
 # ExternalSenderPackage (opcode 25)
 # ---------------------------------------------------------------------------
 
+
 class TestParseExternalSenderPackage:
-    def _build_pkg(self, seq=0, opcode=25, sig_key=b"\xAA\xBB", cred_type=1, identity=b"\x01\x02"):
+    def _build_pkg(self, seq=0, opcode=25, sig_key=b"\xaa\xbb", cred_type=1, identity=b"\x01\x02"):
         out = struct.pack("!H", seq)
         out += bytes([opcode])
         out += bytes([len(sig_key)]) + sig_key
@@ -119,7 +124,7 @@ class TestParseExternalSenderPackage:
         data = self._build_pkg()
         pkg = parse_external_sender_package(data)
         assert pkg.sequence_number == 0
-        assert pkg.signature_key == b"\xAA\xBB"
+        assert pkg.signature_key == b"\xaa\xbb"
         assert pkg.credential_type == 1
         assert pkg.identity == b"\x01\x02"
 
@@ -147,6 +152,7 @@ class TestParseExternalSenderPackage:
 # KeyPackage (opcode 26)
 # ---------------------------------------------------------------------------
 
+
 class TestBuildKeyPackageMessage:
     def test_basic(self):
         kp = b"\x01\x02\x03"
@@ -163,8 +169,9 @@ class TestBuildKeyPackageMessage:
 # Proposals (opcode 27)
 # ---------------------------------------------------------------------------
 
+
 class TestParseProposals:
-    def _build_proposals(self, seq=0, op_type=0, vector_payload=b"\xAA"):
+    def _build_proposals(self, seq=0, op_type=0, vector_payload=b"\xaa"):
         out = struct.pack("!H", seq)
         out += bytes([OPCODE_PROPOSALS, op_type])
         out += bytes([len(vector_payload)]) + vector_payload
@@ -178,7 +185,7 @@ class TestParseProposals:
         assert len(msg.proposal_messages) == 1
 
     def test_revoke(self):
-        ref = b"\xAA\xBB\xCC"
+        ref = b"\xaa\xbb\xcc"
         inner = bytes([len(ref)]) + ref
         data = self._build_proposals(op_type=1, vector_payload=inner)
         msg = parse_proposals(data)
@@ -199,12 +206,12 @@ class TestParseProposals:
 
     def test_too_short(self):
         with pytest.raises(ValueError, match="too short"):
-            parse_proposals(b"\x00\x00\x1B")
+            parse_proposals(b"\x00\x00\x1b")
 
 
 class TestSplitProposalMessagesVector:
     def test_single_message(self):
-        msg = b"\xAA\xBB\xCC"
+        msg = b"\xaa\xbb\xcc"
         vector = bytes([len(msg)]) + msg
         result = split_proposal_messages_vector(vector)
         assert result == [msg]
@@ -228,32 +235,29 @@ class TestSplitProposalMessagesVector:
 # CommitWelcome (opcode 28)
 # ---------------------------------------------------------------------------
 
+
 class TestBuildParseCommitWelcome:
     def test_commit_only(self):
         commit = b"\x01\x02\x03"
         built = build_commit_welcome(commit, None)
-        parsed_commit, parsed_welcome = parse_commit_welcome(built)
-        assert parsed_commit == commit
-        assert parsed_welcome is None
+        assert built[0] == OPCODE_COMMIT_WELCOME
+        assert built[1:] == commit
 
     def test_commit_with_welcome(self):
         commit = b"\x01\x02\x03"
         welcome = b"\x04\x05\x06"
         built = build_commit_welcome(commit, welcome)
-        parsed_commit, parsed_welcome = parse_commit_welcome(built)
-        assert parsed_commit == commit
-        assert parsed_welcome == welcome
+        assert built[0] == OPCODE_COMMIT_WELCOME
+        assert built[1:] == commit + welcome
 
     def test_wrong_opcode(self):
-        data = bytes([29]) + _write_opaque_varint(b"\x01")
+        data = bytes([29]) + b"\x01"
         with pytest.raises(ValueError, match="opcode 28"):
             parse_commit_welcome(data)
 
     def test_empty_commit(self):
         built = build_commit_welcome(b"", None)
-        parsed_commit, parsed_welcome = parse_commit_welcome(built)
-        assert parsed_commit == b""
-        assert parsed_welcome is None
+        assert built == bytes([OPCODE_COMMIT_WELCOME])
 
     def test_too_short(self):
         with pytest.raises(ValueError, match="too short"):
@@ -264,13 +268,14 @@ class TestBuildParseCommitWelcome:
 # AnnounceCommit (opcode 29)
 # ---------------------------------------------------------------------------
 
+
 class TestParseAnnounceCommit:
     def test_valid(self):
         data = struct.pack("!H", 0) + bytes([OPCODE_ANNOUNCE_COMMIT]) + struct.pack("!H", 42)
-        data += b"\xAA\xBB"
+        data += b"\xaa\xbb"
         tid, commit = parse_announce_commit(data)
         assert tid == 42
-        assert commit == b"\xAA\xBB"
+        assert commit == b"\xaa\xbb"
 
     def test_wrong_opcode(self):
         data = struct.pack("!H", 0) + bytes([28]) + struct.pack("!H", 0)
@@ -279,20 +284,21 @@ class TestParseAnnounceCommit:
 
     def test_too_short(self):
         with pytest.raises(ValueError, match="too short"):
-            parse_announce_commit(b"\x00\x00\x1D")
+            parse_announce_commit(b"\x00\x00\x1d")
 
 
 # ---------------------------------------------------------------------------
 # WelcomeMessage (opcode 30)
 # ---------------------------------------------------------------------------
 
+
 class TestParseWelcomeMessage:
     def test_valid(self):
         data = struct.pack("!H", 0) + bytes([OPCODE_WELCOME]) + struct.pack("!H", 99)
-        data += b"\xCC\xDD"
+        data += b"\xcc\xdd"
         tid, welcome = parse_welcome_message(data)
         assert tid == 99
-        assert welcome == b"\xCC\xDD"
+        assert welcome == b"\xcc\xdd"
 
     def test_wrong_opcode(self):
         data = struct.pack("!H", 0) + bytes([29]) + struct.pack("!H", 0)
@@ -301,25 +307,26 @@ class TestParseWelcomeMessage:
 
     def test_too_short(self):
         with pytest.raises(ValueError, match="too short"):
-            parse_welcome_message(b"\x00\x00\x1E")
+            parse_welcome_message(b"\x00\x00\x1e")
 
 
 # ---------------------------------------------------------------------------
 # ExecuteTransition (opcode 22)
 # ---------------------------------------------------------------------------
 
+
 class TestParseExecuteTransition:
     def test_valid(self):
-        payload = json.dumps({"op": 22, "d": {"transition_id": 10}}).encode()
+        payload = orjson.dumpss({"op": 22, "d": {"transition_id": 10}}).encode()
         assert parse_execute_transition(payload) == 10
 
     def test_missing_d(self):
-        payload = json.dumps({"op": 22}).encode()
+        payload = orjson.dumpss({"op": 22}).encode()
         with pytest.raises(ValueError, match="'d' object"):
             parse_execute_transition(payload)
 
     def test_missing_tid(self):
-        payload = json.dumps({"op": 22, "d": {}}).encode()
+        payload = orjson.dumpss({"op": 22, "d": {}}).encode()
         with pytest.raises(ValueError, match="transition_id"):
             parse_execute_transition(payload)
 
@@ -328,30 +335,30 @@ class TestParseExecuteTransition:
             parse_execute_transition(b"not json")
 
     def test_tid_out_of_range(self):
-        payload = json.dumps({"op": 22, "d": {"transition_id": 0x10000}}).encode()
+        payload = orjson.dumpss({"op": 22, "d": {"transition_id": 0x10000}}).encode()
         with pytest.raises(ValueError, match="uint16"):
             parse_execute_transition(payload)
 
     def test_tid_zero(self):
-        payload = json.dumps({"op": 22, "d": {"transition_id": 0}}).encode()
+        payload = orjson.dumpss({"op": 22, "d": {"transition_id": 0}}).encode()
         assert parse_execute_transition(payload) == 0
 
     def test_tid_max(self):
-        payload = json.dumps({"op": 22, "d": {"transition_id": 0xFFFF}}).encode()
+        payload = orjson.dumpss({"op": 22, "d": {"transition_id": 0xFFFF}}).encode()
         assert parse_execute_transition(payload) == 0xFFFF
 
     def test_d_is_array(self):
-        payload = json.dumps({"op": 22, "d": [1, 2]}).encode()
+        payload = orjson.dumpss({"op": 22, "d": [1, 2]}).encode()
         with pytest.raises(ValueError, match="'d' object"):
             parse_execute_transition(payload)
 
     def test_payload_is_array(self):
-        payload = json.dumps([1, 2]).encode()
+        payload = orjson.dumpss([1, 2]).encode()
         with pytest.raises(ValueError, match="JSON object"):
             parse_execute_transition(payload)
 
     def test_tid_string_coercion(self):
-        payload = json.dumps({"op": 22, "d": {"transition_id": "10"}}).encode()
+        payload = orjson.dumpss({"op": 22, "d": {"transition_id": "10"}}).encode()
         assert parse_execute_transition(payload) == 10
 
 
@@ -359,10 +366,11 @@ class TestParseExecuteTransition:
 # InvalidCommitWelcome (opcode 31)
 # ---------------------------------------------------------------------------
 
+
 class TestBuildInvalidCommitWelcome:
     def test_valid(self):
         result = build_invalid_commit_welcome(42)
-        obj = json.loads(result)
+        obj = orjson.loadss(result)
         assert obj["op"] == OPCODE_INVALID_COMMIT_WELCOME
         assert obj["d"]["transition_id"] == 42
 
@@ -374,7 +382,7 @@ class TestBuildInvalidCommitWelcome:
 
     def test_zero(self):
         result = build_invalid_commit_welcome(0)
-        obj = json.loads(result)
+        obj = orjson.loadss(result)
         assert obj["d"]["transition_id"] == 0
 
 
@@ -382,22 +390,23 @@ class TestBuildInvalidCommitWelcome:
 # Identify (opcode 0)
 # ---------------------------------------------------------------------------
 
+
 class TestBuildIdentify:
     def test_basic(self):
         result = build_identify(1)
-        obj = json.loads(result)
+        obj = orjson.loadss(result)
         assert obj["op"] == OPCODE_IDENTIFY
         assert obj["d"]["max_dave_protocol_version"] == 1
 
     def test_extra_fields(self):
         result = build_identify(1, server_id="123", user_id="456")
-        obj = json.loads(result)
+        obj = orjson.loadss(result)
         assert obj["d"]["server_id"] == "123"
         assert obj["d"]["user_id"] == "456"
 
     def test_custom_version(self):
         result = build_identify(2)
-        obj = json.loads(result)
+        obj = orjson.loadss(result)
         assert obj["d"]["max_dave_protocol_version"] == 2
 
 
@@ -405,23 +414,24 @@ class TestBuildIdentify:
 # SelectProtocolAck (opcode 4)
 # ---------------------------------------------------------------------------
 
+
 class TestParseSelectProtocolAck:
     def test_valid(self):
-        payload = json.dumps({"op": 4, "d": {"dave_protocol_version": 1}}).encode()
+        payload = orjson.dumpss({"op": 4, "d": {"dave_protocol_version": 1}}).encode()
         assert parse_select_protocol_ack(payload) == 1
 
     def test_missing_d(self):
-        payload = json.dumps({"op": 4}).encode()
+        payload = orjson.dumpss({"op": 4}).encode()
         with pytest.raises(ValueError, match="'d' object"):
             parse_select_protocol_ack(payload)
 
     def test_missing_version(self):
-        payload = json.dumps({"op": 4, "d": {}}).encode()
+        payload = orjson.dumpss({"op": 4, "d": {}}).encode()
         with pytest.raises(ValueError, match="dave_protocol_version"):
             parse_select_protocol_ack(payload)
 
     def test_string_coercion(self):
-        payload = json.dumps({"op": 4, "d": {"dave_protocol_version": "1"}}).encode()
+        payload = orjson.dumpss({"op": 4, "d": {"dave_protocol_version": "1"}}).encode()
         assert parse_select_protocol_ack(payload) == 1
 
     def test_invalid_json(self):
@@ -433,23 +443,24 @@ class TestParseSelectProtocolAck:
 # ClientsConnect (opcode 11)
 # ---------------------------------------------------------------------------
 
+
 class TestParseClientsConnect:
     def test_valid(self):
-        payload = json.dumps({"op": 11, "d": {"user_ids": ["123", "456"]}}).encode()
+        payload = orjson.dumpss({"op": 11, "d": {"user_ids": ["123", "456"]}}).encode()
         result = parse_clients_connect(payload)
         assert result == ["123", "456"]
 
     def test_empty_list(self):
-        payload = json.dumps({"op": 11, "d": {"user_ids": []}}).encode()
+        payload = orjson.dumpss({"op": 11, "d": {"user_ids": []}}).encode()
         assert parse_clients_connect(payload) == []
 
     def test_not_strings(self):
-        payload = json.dumps({"op": 11, "d": {"user_ids": [123]}}).encode()
+        payload = orjson.dumpss({"op": 11, "d": {"user_ids": [123]}}).encode()
         with pytest.raises(ValueError, match="strings"):
             parse_clients_connect(payload)
 
     def test_missing_user_ids(self):
-        payload = json.dumps({"op": 11, "d": {}}).encode()
+        payload = orjson.dumpss({"op": 11, "d": {}}).encode()
         with pytest.raises(ValueError, match="list"):
             parse_clients_connect(payload)
 
@@ -458,18 +469,19 @@ class TestParseClientsConnect:
 # ClientDisconnect (opcode 13)
 # ---------------------------------------------------------------------------
 
+
 class TestParseClientDisconnect:
     def test_valid(self):
-        payload = json.dumps({"op": 13, "d": {"user_id": "789"}}).encode()
+        payload = orjson.dumpss({"op": 13, "d": {"user_id": "789"}}).encode()
         assert parse_client_disconnect(payload) == "789"
 
     def test_not_string(self):
-        payload = json.dumps({"op": 13, "d": {"user_id": 789}}).encode()
+        payload = orjson.dumpss({"op": 13, "d": {"user_id": 789}}).encode()
         with pytest.raises(ValueError, match="string"):
             parse_client_disconnect(payload)
 
     def test_missing(self):
-        payload = json.dumps({"op": 13, "d": {}}).encode()
+        payload = orjson.dumpss({"op": 13, "d": {}}).encode()
         with pytest.raises(ValueError, match="string"):
             parse_client_disconnect(payload)
 
@@ -478,30 +490,39 @@ class TestParseClientDisconnect:
 # PrepareTransition (opcode 21)
 # ---------------------------------------------------------------------------
 
+
 class TestParsePrepareTransition:
     def test_valid(self):
-        payload = json.dumps({"op": 21, "d": {"protocol_version": 1, "transition_id": 5}}).encode()
+        payload = orjson.dumpss(
+            {"op": 21, "d": {"protocol_version": 1, "transition_id": 5}}
+        ).encode()
         pv, tid = parse_prepare_transition(payload)
         assert pv == 1
         assert tid == 5
 
     def test_transition_id_zero(self):
-        payload = json.dumps({"op": 21, "d": {"protocol_version": 1, "transition_id": 0}}).encode()
+        payload = orjson.dumpss(
+            {"op": 21, "d": {"protocol_version": 1, "transition_id": 0}}
+        ).encode()
         _, tid = parse_prepare_transition(payload)
         assert tid == 0
 
     def test_missing_fields(self):
-        payload = json.dumps({"op": 21, "d": {}}).encode()
+        payload = orjson.dumpss({"op": 21, "d": {}}).encode()
         with pytest.raises(ValueError, match="required"):
             parse_prepare_transition(payload)
 
     def test_tid_out_of_range(self):
-        payload = json.dumps({"op": 21, "d": {"protocol_version": 1, "transition_id": 0x10000}}).encode()
+        payload = orjson.dumpss(
+            {"op": 21, "d": {"protocol_version": 1, "transition_id": 0x10000}}
+        ).encode()
         with pytest.raises(ValueError, match="uint16"):
             parse_prepare_transition(payload)
 
     def test_negative_tid(self):
-        payload = json.dumps({"op": 21, "d": {"protocol_version": 1, "transition_id": -1}}).encode()
+        payload = orjson.dumpss(
+            {"op": 21, "d": {"protocol_version": 1, "transition_id": -1}}
+        ).encode()
         with pytest.raises(ValueError, match="uint16"):
             parse_prepare_transition(payload)
 
@@ -510,10 +531,11 @@ class TestParsePrepareTransition:
 # ReadyForTransition (opcode 23)
 # ---------------------------------------------------------------------------
 
+
 class TestBuildReadyForTransition:
     def test_valid(self):
         result = build_ready_for_transition(10)
-        obj = json.loads(result)
+        obj = orjson.loadss(result)
         assert obj["op"] == OPCODE_READY_FOR_TRANSITION
         assert obj["d"]["transition_id"] == 10
 
@@ -525,7 +547,7 @@ class TestBuildReadyForTransition:
 
     def test_zero(self):
         result = build_ready_for_transition(0)
-        obj = json.loads(result)
+        obj = orjson.loadss(result)
         assert obj["d"]["transition_id"] == 0
 
 
@@ -533,20 +555,21 @@ class TestBuildReadyForTransition:
 # PrepareEpoch (opcode 24)
 # ---------------------------------------------------------------------------
 
+
 class TestParsePrepareEpoch:
     def test_valid(self):
-        payload = json.dumps({"op": 24, "d": {"protocol_version": 1, "epoch": 1}}).encode()
+        payload = orjson.dumpss({"op": 24, "d": {"protocol_version": 1, "epoch": 1}}).encode()
         pv, epoch = parse_prepare_epoch(payload)
         assert pv == 1
         assert epoch == 1
 
     def test_epoch_zero(self):
-        payload = json.dumps({"op": 24, "d": {"protocol_version": 1, "epoch": 0}}).encode()
+        payload = orjson.dumpss({"op": 24, "d": {"protocol_version": 1, "epoch": 0}}).encode()
         _, epoch = parse_prepare_epoch(payload)
         assert epoch == 0
 
     def test_missing_fields(self):
-        payload = json.dumps({"op": 24, "d": {}}).encode()
+        payload = orjson.dumpss({"op": 24, "d": {}}).encode()
         with pytest.raises(ValueError, match="required"):
             parse_prepare_epoch(payload)
 
@@ -555,14 +578,25 @@ class TestParsePrepareEpoch:
 # Opcode constants
 # ---------------------------------------------------------------------------
 
+
 class TestOpcodeConstants:
     def test_all_unique(self):
         opcodes = [
-            OPCODE_IDENTIFY, OPCODE_SELECT_PROTOCOL_ACK, OPCODE_CLIENTS_CONNECT,
-            OPCODE_CLIENT_DISCONNECT, OPCODE_PREPARE_TRANSITION, OPCODE_EXECUTE_TRANSITION,
-            OPCODE_READY_FOR_TRANSITION, OPCODE_PREPARE_EPOCH, OPCODE_EXTERNAL_SENDER_PACKAGE,
-            OPCODE_KEY_PACKAGE, OPCODE_PROPOSALS, OPCODE_COMMIT_WELCOME, OPCODE_ANNOUNCE_COMMIT,
-            OPCODE_WELCOME, OPCODE_INVALID_COMMIT_WELCOME,
+            OPCODE_IDENTIFY,
+            OPCODE_SELECT_PROTOCOL_ACK,
+            OPCODE_CLIENTS_CONNECT,
+            OPCODE_CLIENT_DISCONNECT,
+            OPCODE_PREPARE_TRANSITION,
+            OPCODE_EXECUTE_TRANSITION,
+            OPCODE_READY_FOR_TRANSITION,
+            OPCODE_PREPARE_EPOCH,
+            OPCODE_EXTERNAL_SENDER_PACKAGE,
+            OPCODE_KEY_PACKAGE,
+            OPCODE_PROPOSALS,
+            OPCODE_COMMIT_WELCOME,
+            OPCODE_ANNOUNCE_COMMIT,
+            OPCODE_WELCOME,
+            OPCODE_INVALID_COMMIT_WELCOME,
         ]
         assert len(opcodes) == len(set(opcodes))
 

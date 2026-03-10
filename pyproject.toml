@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sorrydave"
-version = "0.5.0"
+version = "0.6.0"
 description = "DAVE (Discord Audio/Video End-to-End Encryption) protocol library — pure data and state layer on rfc9420"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -23,9 +23,10 @@ classifiers = [
     "Topic :: Security :: Cryptography",
 ]
 dependencies = [
-    "rfc9420>=0.7.0",
+    "rfc9420>=0.9.0",
     "cryptography>=41",
     "pycryptodome>=3.19",
+    "orjson",
 ]
 
 [project.urls]
