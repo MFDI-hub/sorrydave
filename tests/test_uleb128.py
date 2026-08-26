@@ -1,5 +1,4 @@
-import pytest
-from sorrydave.crypto.cipher import uleb128_encode, uleb128_decode
+from sorrydave.crypto.cipher import uleb128_decode, uleb128_encode
 
 
 def test_uleb128_roundtrip():

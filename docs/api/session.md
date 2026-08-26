@@ -9,11 +9,13 @@ The **DaveSession** is the high-level facade for a DAVE media session. It holds 
 **Constructor**
 
 ```python
-DaveSession(local_user_id: int, protocol_version: int = 1)
+DaveSession(local_user_id: int, protocol_version: int = 1, *, channel_id: int | str | None = None, group_id: bytes | None = None)
 ```
 
 - **local_user_id** (int): Your user identifier (e.g. Discord snowflake, 64-bit). Used in key package identity, exporter context, and encryptor identity.
 - **protocol_version** (int): DAVE protocol version; defaults to `1`.
+- **channel_id** (int | str | None): Voice channel (or Go Live stream) snowflake. Encoded as eight big-endian bytes for the MLS group ID. Required when talking to Discord: the gateway drops commits whose group ID is not this value.
+- **group_id** (bytes | None): Explicit MLS group ID. Overrides `channel_id` when set.
 
 **Internal state (conceptual)**
 
@@ -93,7 +95,7 @@ Processes **opcode 27** (Proposals). Parses proposals, applies them to the group
 
 - **proposal_bytes**: Full opcode 27 payload.
 - **Return value**: Bytes to send as opcode 28, or `None` if no commit was created (e.g. no group, no signing key, or proposals not applicable).
-- **Note**: Proposal application can fail for some members (e.g. external sender not in tree); the session skips failing proposals and still tries to create a commit when possible.
+- **Note**: The session refuses Add proposals for users that are not expected (opcode 11 / local user). If an Add is refused or `process_proposal` fails, no opcode 28 payload is returned — a commit that omitted a proposal reference would be dropped by the gateway with no error opcode.
 
 ---
 
@@ -153,9 +155,9 @@ session.execute_transition(transition_id)
 leave_group() -> bytes | None
 ```
 
-Tears down local MLS group state: clears group, send/receive ratchets, member state, key package bytes, and epoch. If the session had a group and a signing key, it attempts to create a **Remove** proposal for the local member and returns its serialized bytes to send (e.g. via opcode 27); otherwise returns `None`.
+Tears down local MLS group state: clears group, send/receive ratchets, member state, key package bytes, and epoch. Always returns `None`. Opcode 27 is gateway-to-client only; the local client does not send a Remove proposal.
 
-- **Return value**: Serialized Remove proposal bytes, or `None`.
+- **Return value**: Always `None`. The `bytes | None` return type is kept for API compatibility.
 
 ---
 
@@ -202,7 +204,7 @@ decrypted = decryptor.decrypt(protocol_frame)
 
 | Step | Method / Opcode |
 |------|------------------|
-| Create | `DaveSession(local_user_id=...)` |
+| Create | `DaveSession(local_user_id=..., channel_id=...)` |
 | First key package | `prepare_epoch(1)` → send as opcode 26 |
 | External sender | `handle_external_sender_package(opcode_25_payload)` |
 | Proposals | `handle_proposals(opcode_27_payload)` → send return value as opcode 28 if not None |
@@ -211,7 +213,7 @@ decrypted = decryptor.decrypt(protocol_frame)
 | Rotate keys | `parse_execute_transition` → `execute_transition(transition_id)` |
 | Encrypt | `get_encryptor().encrypt(encoded_frame, codec="OPUS")` |
 | Decrypt | `get_decryptor(sender_id).decrypt(protocol_frame)` |
-| Leave | `leave_group()` → optionally send returned proposal as opcode 27 |
+| Leave | `leave_group()` — local teardown only; do not send opcode 27 |
 
 ---
 

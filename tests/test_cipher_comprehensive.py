@@ -1,7 +1,6 @@
 """Comprehensive cipher tests: nonce expansion, GCM encrypt/decrypt, interleaved ranges, edge cases."""
 
 import pytest
-
 from sorrydave.crypto.cipher import (
     DAVE_MAGIC,
     GCM_TAG_LENGTH,

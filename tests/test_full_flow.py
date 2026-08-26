@@ -30,7 +30,6 @@ from pathlib import Path
 
 import orjson
 import pytest
-
 from sorrydave.mls.opcodes import (
     OPCODE_ANNOUNCE_COMMIT,
     OPCODE_COMMIT_WELCOME,
@@ -108,7 +107,7 @@ class TestFullFlowParser:
 
     def test_all_lines_parse(self):
         lines = _load_full_txt_lines()
-        for i, line in enumerate(lines):
+        for _i, line in enumerate(lines):
             if _is_json_line(line):
                 obj = orjson.loads(line)
                 assert isinstance(obj, dict)
@@ -120,35 +119,35 @@ class TestFullFlowParser:
 
     def test_json_op0_has_user_id(self):
         lines = _load_full_txt_lines()
-        op0_line = next(l for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 0)
+        op0_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 0)
         obj = orjson.loads(op0_line)
         assert "user_id" in obj["d"]
         assert obj["d"]["user_id"] == "256062279974387723"
 
     def test_json_op4_has_dave_protocol_version(self):
         lines = _load_full_txt_lines()
-        op4_line = next(l for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 4)
+        op4_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 4)
         obj = orjson.loads(op4_line)
         assert obj["d"]["dave_protocol_version"] == 1
         parse_select_protocol_ack(op4_line.encode())  # no raise
 
     def test_json_op11_has_user_ids(self):
         lines = _load_full_txt_lines()
-        op11_line = next(l for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 11)
+        op11_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 11)
         user_ids = parse_clients_connect(op11_line.encode())
         assert user_ids == ["1136799305555005490"]
 
     def test_json_op13_client_disconnect(self):
         lines = _load_full_txt_lines()
-        op13_line = next(l for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 13)
+        op13_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 13)
         user_id = parse_client_disconnect(op13_line.encode())
         assert user_id == "1136799305555005490"
 
     def test_binary_op25_external_sender_parses(self):
         lines = _load_full_txt_lines()
-        bin_lines = [l for l in lines if not _is_json_line(l)]
+        bin_lines = [line for line in lines if not _is_json_line(line)]
         # First binary is op 26; second is op 25 (000119...)
-        op25_line = next(l for l in bin_lines if l.startswith("0001") and len(l) < 200)
+        op25_line = next(line for line in bin_lines if line.startswith("0001") and len(line) < 200)
         raw = _parse_binary_line(op25_line)
         pkg = parse_external_sender_package(raw)
         assert pkg.sequence_number == 1
@@ -156,7 +155,7 @@ class TestFullFlowParser:
 
     def test_binary_op26_key_package_format(self):
         lines = _load_full_txt_lines()
-        op26_lines = [l for l in lines if not _is_json_line(l) and l.startswith("1a")]
+        op26_lines = [line for line in lines if not _is_json_line(line) and line.startswith("1a")]
         assert len(op26_lines) >= 2  # first and final key packages
         for line in op26_lines:
             raw = _parse_binary_line(line)
@@ -166,7 +165,7 @@ class TestFullFlowParser:
     def test_binary_op27_proposals_parse(self):
         lines = _load_full_txt_lines()
         # op 27: 00061b00...
-        op27_line = next(l for l in lines if not _is_json_line(l) and "1b00" in l[:20])
+        op27_line = next(line for line in lines if not _is_json_line(line) and "1b00" in line[:20])
         raw = _parse_binary_line(op27_line)
         msg = parse_proposals(raw)
         assert msg.sequence_number == 6
@@ -174,7 +173,7 @@ class TestFullFlowParser:
 
     def test_binary_op28_commit_welcome_parses(self):
         lines = _load_full_txt_lines()
-        op28_line = next(l for l in lines if not _is_json_line(l) and l.startswith("1c"))
+        op28_line = next(line for line in lines if not _is_json_line(line) and line.startswith("1c"))
         raw = _parse_binary_line(op28_line)
         commit_bytes, welcome_bytes = parse_commit_welcome(raw)
         assert isinstance(commit_bytes, bytes)
@@ -183,7 +182,7 @@ class TestFullFlowParser:
     def test_binary_op29_announce_commit_parses(self):
         lines = _load_full_txt_lines()
         # op 29: 00071d00...
-        op29_line = next(l for l in lines if not _is_json_line(l) and "1d00" in l[:20])
+        op29_line = next(line for line in lines if not _is_json_line(line) and "1d00" in line[:20])
         raw = _parse_binary_line(op29_line)
         transition_id, commit_message = parse_announce_commit(raw)
         assert isinstance(transition_id, int)
@@ -201,14 +200,15 @@ class TestFullFlowSessionReplay:
         from sorrydave.session import DaveSession
 
         lines = _load_full_txt_lines()
-        op0 = next(orjson.loads(l) for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 0)
+        op0 = next(orjson.loads(line) for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 0)
         local_user_id = int(op0["d"]["user_id"])
+        channel_id = int(op0["d"]["channel_id"])
 
-        op25_line = next(l for l in lines if not _is_json_line(l) and l.startswith("0001") and len(l) < 200)
-        op27_line = next(l for l in lines if not _is_json_line(l) and "1b00" in l[:20])
-        op11_line = next(l for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 11)
+        op25_line = next(line for line in lines if not _is_json_line(line) and line.startswith("0001") and len(line) < 200)
+        op27_line = next(line for line in lines if not _is_json_line(line) and "1b00" in line[:20])
+        op11_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 11)
 
-        session = DaveSession(local_user_id=local_user_id)
+        session = DaveSession(local_user_id=local_user_id, channel_id=channel_id)
         out = session.prepare_epoch(1)
         assert out is not None
         assert out[0] == OPCODE_KEY_PACKAGE
@@ -220,36 +220,56 @@ class TestFullFlowSessionReplay:
         session.add_expected_members(user_ids)
 
         raw_27 = _parse_binary_line(op27_line)
+        epoch_before_proposal = session._group.epoch
         commit_welcome_payload = session.handle_proposals(raw_27)
         assert commit_welcome_payload is not None
+        assert session._group.epoch == epoch_before_proposal
+        assert session._current_epoch == 0
         assert len(commit_welcome_payload) > 0
         assert commit_welcome_payload[0] == OPCODE_COMMIT_WELCOME
+        our_commit, our_welcome = parse_commit_welcome(commit_welcome_payload)
+        assert len(our_commit) > 4
+        assert our_commit[:4] == b"\x00\x01\x00\x01"
+        assert channel_id.to_bytes(8, "big") in our_commit
+        assert our_welcome is not None and len(our_welcome) > 0
+        session.handle_commit(0, our_commit)
+        assert session._group.epoch == epoch_before_proposal + 1
+        assert session._current_epoch == 1
+        # Captured initial op29 uses transition_id=0: media is ready without op22.
+        assert session.is_media_ready is True
+        encryptor = session.get_encryptor()
+        assert encryptor is session.get_encryptor()
 
-        op28_line = next(l for l in lines if not _is_json_line(l) and l.startswith("1c"))
+        op28_line = next(line for line in lines if not _is_json_line(line) and line.startswith("1c"))
         raw_28 = _parse_binary_line(op28_line)
         commit_bytes, welcome_bytes = parse_commit_welcome(raw_28)
         assert isinstance(commit_bytes, bytes)
+        assert len(commit_bytes) > 4
+        assert commit_bytes[:4] == b"\x00\x01\x00\x01"
+        assert welcome_bytes is not None and len(welcome_bytes) > 0
 
-        op29_line = next(l for l in lines if not _is_json_line(l) and "1d00" in l[:20])
+        op29_line = next(line for line in lines if not _is_json_line(line) and "1d00" in line[:20])
         raw_29 = _parse_binary_line(op29_line)
         transition_id, announce_commit_bytes = parse_announce_commit(raw_29)
         assert transition_id == 0
         assert len(announce_commit_bytes) > 0
+        assert session.is_media_ready is True
 
     def test_session_after_other_leaves_prepare_epoch_and_transition(self):
         from sorrydave.session import DaveSession
 
         lines = _load_full_txt_lines()
-        op0 = next(orjson.loads(l) for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 0)
+        op0 = next(orjson.loads(line) for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 0)
         local_user_id = int(op0["d"]["user_id"])
-        op11_line = next(l for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 11)
-        op13_line = next(l for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 13)
-        op24_line = next(l for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 24)
-        op21_line = next(l for l in lines if _is_json_line(l) and orjson.loads(l).get("op") == 21)
-        op25_line = next(l for l in lines if not _is_json_line(l) and l.startswith("0001") and len(l) < 200)
-        op27_line = next(l for l in lines if not _is_json_line(l) and "1b00" in l[:20])
+        channel_id = int(op0["d"]["channel_id"])
+        op11_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 11)
+        op13_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 13)
+        op24_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 24)
+        op21_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 21)
+        op25_line = next(line for line in lines if not _is_json_line(line) and line.startswith("0001") and len(line) < 200)
+        op27_line = next(line for line in lines if not _is_json_line(line) and "1b00" in line[:20])
 
-        session = DaveSession(local_user_id=local_user_id)
+        session = DaveSession(local_user_id=local_user_id, channel_id=channel_id)
         session.prepare_epoch(1)
         session.handle_external_sender_package(_parse_binary_line(op25_line))
         session.add_expected_members(parse_clients_connect(op11_line.encode()))

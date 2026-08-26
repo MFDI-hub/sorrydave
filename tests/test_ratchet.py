@@ -78,11 +78,18 @@ def test_ratchet_max_forward_gap_after_advancing_max_seen():
 
 
 def test_ratchet_max_forward_gap_default():
-    """Default max_forward_gap (64): generation 65 after 0 raises ValueError."""
+    """Default max_forward_gap (250, davey MAX_GENERATION_GAP): gen 251 after 0 fails."""
     r = KeyRatchet(KEY_16)
     r.get_key_for_generation(0)
     with pytest.raises(ValueError, match="max forward gap"):
-        r.get_key_for_generation(65)
+        r.get_key_for_generation(251)
+
+
+def test_davey_hash_ratchet_generation_0_vector():
+    """Lock davey HashRatchet gen-0 key (RFC 9420 §9.1 ExpandWithLabel)."""
+    base = bytes.fromhex("cedd61b1b8a1ca69046554282cf70b7b")
+    r = KeyRatchet(base)
+    assert r.get_key_for_generation(0) == bytes.fromhex("7530f9a9945e2d2e06d0651f7b2a864b")
 
 
 def test_ratchet_max_forward_gap_must_be_positive():
@@ -94,14 +101,15 @@ def test_ratchet_max_forward_gap_must_be_positive():
 
 
 def test_ratchet_eviction():
-    """After retention_seconds, evicted generation can still be re-derived (within forward gap)."""
+    """Only old generations expire; retention starts when a newer key is used."""
     r = KeyRatchet(KEY_16, retention_seconds=0.1)
-    r.get_key_for_generation(0)
+    key0 = r.get_key_for_generation(0)
     time.sleep(0.15)
-    # Generation 0 may be evicted; requesting it again will re-derive (or we request a new gen)
+    assert r.get_key_for_generation(0) == key0
+
     r.get_key_for_generation(1)
-    # If we request 0 after eviction, it gets re-derived (no longer in cache). So 0 should still work
-    # since we're within max_forward_gap. Actually after 0.15s, 0 is evicted. So get_key_for_generation(0)
-    # will try to derive. But now _max_generation_seen is 1, so cap = 1+64=65, 0 < 65 so it's allowed.
-    k0 = r.get_key_for_generation(0)
-    assert len(k0) == 16
+    assert r.get_key_for_generation(0) == key0
+    time.sleep(0.15)
+    r.get_key_for_generation(1)
+    with pytest.raises(ValueError, match="erased"):
+        r.get_key_for_generation(0)

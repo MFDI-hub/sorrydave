@@ -3,7 +3,7 @@ Frame encryptor and decryptor: codec-aware transform with DAVE protocol footer.
 """
 
 import time
-from typing import Callable, Optional, Union
+from typing import Callable, Union
 
 from sorrydave.crypto.cipher import (
     DAVE_MAGIC,
@@ -14,7 +14,12 @@ from sorrydave.crypto.cipher import (
 )
 from sorrydave.crypto.ratchet import KeyRatchet
 from sorrydave.exceptions import DecryptionError
-from sorrydave.media.codecs import get_unencrypted_ranges, transform_av1_frame_for_encrypt
+from sorrydave.media.codecs import (
+    get_unencrypted_ranges,
+    next_h26x_nalu_index,
+    transform_av1_frame_for_encrypt,
+    transform_h26x_frame_for_encrypt,
+)
 from sorrydave.types import ProtocolSupplementalData, UnencryptedRange
 
 # Minimum footer: 8 tag + 1 nonce byte + 0 ranges + 1 size + 2 magic = 12
@@ -103,6 +108,31 @@ def _contains_h26x_start_code(data: bytes) -> bool:
     return False
 
 
+def _validate_encrypted_h26x_frame(
+    protocol_frame: bytes, ranges: list[UnencryptedRange]
+) -> bool:
+    """Return True if encrypted sections (plus footer) contain no H.26x start code.
+
+    Port of davey ``validate_encrypted_frame``: plaintext NAL start codes are
+    allowed; ciphertext and the supplemental tail must not contain ``00 00 01``.
+    """
+    padding = len(H26X_START_3) - 1
+    encrypted_section_start = 0
+    for r in sorted(ranges, key=lambda x: x.offset):
+        if encrypted_section_start == r.offset:
+            encrypted_section_start += r.length
+            continue
+        start = encrypted_section_start - min(encrypted_section_start, padding)
+        end = min(r.offset + padding, len(protocol_frame))
+        if next_h26x_nalu_index(protocol_frame[start:end], 0) is not None:
+            return False
+        encrypted_section_start = r.offset + r.length
+    if encrypted_section_start == len(protocol_frame):
+        return True
+    start = encrypted_section_start - min(encrypted_section_start, padding)
+    return next_h26x_nalu_index(protocol_frame[start:], 0) is None
+
+
 def _build_supplemental_footer(
     tag_8: bytes,
     nonce_32: int,
@@ -150,7 +180,7 @@ def _parse_supplemental_from_tail(frame: bytes) -> tuple[ProtocolSupplementalDat
     if frame[-2:] != DAVE_MAGIC:
         raise DecryptionError("Invalid magic marker")
     suppl_size = frame[-3]
-    if suppl_size < 11 or suppl_size > len(frame):
+    if suppl_size < MIN_SUPPLEMENTAL or suppl_size > len(frame):
         raise DecryptionError("Invalid supplemental size")
     # Supplemental content = tag + nonce + ranges; total supplemental = content + 1 (size byte) + 2 (magic)
     suppl_content_start = len(frame) - suppl_size
@@ -162,15 +192,24 @@ def _parse_supplemental_from_tail(frame: bytes) -> tuple[ProtocolSupplementalDat
         raise DecryptionError("Supplemental body too short")
     tag_8 = body[:8]
     offset = 8
-    nonce_32, offset = uleb128_decode(body, offset)
+    try:
+        nonce_32, offset = uleb128_decode(body, offset)
+    except ValueError as e:
+        raise DecryptionError("Invalid supplemental nonce encoding") from e
     if nonce_32 > 0xFFFFFFFF:
         raise DecryptionError("Nonce overflow")
     ranges: list[UnencryptedRange] = []
     while offset < len(body):
-        off_val, offset = uleb128_decode(body, offset)
+        try:
+            off_val, offset = uleb128_decode(body, offset)
+        except ValueError as e:
+            raise DecryptionError("Truncated range in supplemental") from e
         if offset > len(body):
             raise DecryptionError("Truncated range in supplemental")
-        len_val, offset = uleb128_decode(body, offset)
+        try:
+            len_val, offset = uleb128_decode(body, offset)
+        except ValueError as e:
+            raise DecryptionError("Truncated range in supplemental") from e
         ranges.append(UnencryptedRange(offset=off_val, length=len_val))
     # Validate ranges: non-overlapping, sorted
     for i in range(len(ranges) - 1):
@@ -231,11 +270,13 @@ class FrameEncryptor:
             n = self._nonce_supplier()
             gen = (n >> 24) & 0xFF
             return n, gen
-        n = self._nonce
+        # libdave advances the synchronization nonce before encrypting, so the
+        # first encrypted frame in each epoch uses nonce 1 (never nonce 0).
         self._nonce += 1
         if self._nonce > 0xFFFFFFFF:
             self._nonce = 0
             self._generation_wrap_count += 1
+        n = self._nonce
         generation = (n >> 24) + self._generation_wrap_count * 256
         return n, generation
 
@@ -243,8 +284,9 @@ class FrameEncryptor:
         """
         Encrypt frame with codec-aware ranges and append DAVE supplemental footer.
 
-        For H264/H265, expands 3-byte start codes to 4-byte in unencrypted sections
-        and retries (up to 10 times) if a start code appears in ciphertext or supplemental.
+        For H264/H265, rewrites Annex B start codes to 4-byte ``00 00 00 01``
+        (unencrypted) using davey/libdave NAL ranges, then retries (up to 10
+        times) if a start code appears in ciphertext or supplemental.
 
         Args:
             encoded_frame (bytes): Raw encoded frame.
@@ -262,21 +304,26 @@ class FrameEncryptor:
         frame = encoded_frame
         if codec_upper == "AV1":
             frame = transform_av1_frame_for_encrypt(frame)
-        ranges = get_unencrypted_ranges(frame, codec)
         if codec_upper in ("H264", "H.264", "H265", "H265/HEVC", "HEVC"):
-            frame, ranges = _apply_h26x_start_code_expansion(frame, ranges)
+            frame, ranges = transform_h26x_frame_for_encrypt(
+                frame, h265=codec_upper in ("H265", "H265/HEVC", "HEVC")
+            )
+        else:
+            ranges = get_unencrypted_ranges(frame, codec)
         for _ in range(H26X_RETRY_MAX):
             nonce_32, generation = self._next_nonce_and_generation()
             key = self._ratchet.get_key_for_generation(generation)
             interleaved, tag_8 = encrypt_interleaved(key, nonce_32, frame, ranges)
             footer_body = _build_supplemental_footer(tag_8, nonce_32, ranges)
-            if codec_upper in ("H264", "H.264", "H265", "H265/HEVC", "HEVC"):
-                if _contains_h26x_start_code(interleaved) or _contains_h26x_start_code(footer_body):
-                    continue
             suppl_size = len(footer_body) + 1 + 2
             if suppl_size > 255:
                 raise DecryptionError("Supplemental data too large")
-            return interleaved + footer_body + bytes([suppl_size]) + DAVE_MAGIC
+            protocol = interleaved + footer_body + bytes([suppl_size]) + DAVE_MAGIC
+            if codec_upper in ("H264", "H.264", "H265", "H265/HEVC", "HEVC") and (
+                not _validate_encrypted_h26x_frame(protocol, ranges)
+            ):
+                continue
+            return protocol
         raise DecryptionError(
             "H26X start code in ciphertext or supplemental after max retries; frame dropped"
         )
@@ -297,7 +344,7 @@ class FrameDecryptor:
         sender_user_id: int,
         ratchet: KeyRatchet,
         passthrough: bool = False,
-        fallback_ratchets: Optional[list[tuple[float, KeyRatchet]]] = None,
+        fallback_ratchets: Union[list[tuple[float, KeyRatchet]], None] = None,
     ):
         """
         Initialize the frame decryptor.
@@ -361,7 +408,7 @@ class FrameDecryptor:
             raise DecryptionError("Nonce reuse")
         msb = (suppl.nonce_32 >> 24) & 0xFF
         generation = self._generation_from_nonce(suppl.nonce_32)
-        last_error: Optional[Exception] = None
+        last_error: Union[Exception, None] = None
         try:
             key = self._ratchet.get_key_for_generation(generation)
             plain = decrypt_interleaved(
@@ -439,7 +486,8 @@ def protocol_frame_check(frame: bytes) -> bool:
     if frame[-2:] != DAVE_MAGIC:
         return False
     suppl_size = frame[-3]
-    if suppl_size < 11 or suppl_size >= len(frame):
+    # Allow the minimum valid supplemental size, reject anything smaller.
+    if suppl_size < MIN_SUPPLEMENTAL or suppl_size > len(frame):
         return False
     suppl_content_start = len(frame) - suppl_size
     if suppl_content_start < 0:

@@ -1,13 +1,10 @@
 """Comprehensive opcode tests: all parsers, builders, edge cases, and error conditions."""
 
-import orjson
-
-import pytest
-
 import struct
 
+import orjson
+import pytest
 from rfc9420.codec.tls import TLSDecodeError
-
 from sorrydave.mls.opcodes import (
     OPCODE_ANNOUNCE_COMMIT,
     OPCODE_CLIENT_DISCONNECT,
@@ -24,7 +21,9 @@ from sorrydave.mls.opcodes import (
     OPCODE_READY_FOR_TRANSITION,
     OPCODE_SELECT_PROTOCOL_ACK,
     OPCODE_WELCOME,
-    ExternalSenderPackage,
+    _read_opaque_varint,
+    _read_varint,
+    _write_opaque_varint,
     build_commit_welcome,
     build_identify,
     build_invalid_commit_welcome,
@@ -42,11 +41,7 @@ from sorrydave.mls.opcodes import (
     parse_select_protocol_ack,
     parse_welcome_message,
     split_proposal_messages_vector,
-    _read_varint,
-    _read_opaque_varint,
-    _write_opaque_varint,
 )
-
 
 # ---------------------------------------------------------------------------
 # Varint helpers
@@ -208,6 +203,19 @@ class TestParseProposals:
         with pytest.raises(ValueError, match="too short"):
             parse_proposals(b"\x00\x00\x1b")
 
+    def test_append_multi_message_vector_roundtrip(self):
+        msg1 = b"\xAA\xBB"
+        msg2 = b"\xCC\xDD\xEE"
+        vector_payload = (
+            bytes([len(msg1)]) + msg1 +
+            bytes([len(msg2)]) + msg2
+        )
+        data = self._build_proposals(op_type=0, vector_payload=vector_payload)
+        parsed = parse_proposals(data)
+        assert parsed.operation_type == 0
+        assert parsed.proposal_messages == [vector_payload]
+        assert split_proposal_messages_vector(parsed.proposal_messages[0]) == [msg1, msg2]
+
 
 class TestSplitProposalMessagesVector:
     def test_single_message(self):
@@ -241,14 +249,25 @@ class TestBuildParseCommitWelcome:
         commit = b"\x01\x02\x03"
         built = build_commit_welcome(commit, None)
         assert built[0] == OPCODE_COMMIT_WELCOME
-        assert built[1:] == commit
+        parsed_commit, parsed_welcome = parse_commit_welcome(built)
+        assert parsed_commit == commit
+        assert parsed_welcome is None
 
     def test_commit_with_welcome(self):
+        from sorrydave.mls.opcodes import MLS10_PUBLIC_MESSAGE_PREFIX
+
         commit = b"\x01\x02\x03"
         welcome = b"\x04\x05\x06"
         built = build_commit_welcome(commit, welcome)
         assert built[0] == OPCODE_COMMIT_WELCOME
-        assert built[1:] == commit + welcome
+        assert built == bytes([OPCODE_COMMIT_WELCOME]) + MLS10_PUBLIC_MESSAGE_PREFIX + commit + welcome
+
+    def test_wraps_commit_as_mls_message(self):
+        from sorrydave.mls.opcodes import MLS10_PUBLIC_MESSAGE_PREFIX
+
+        commit = b"\x01\x02\x03"
+        built = build_commit_welcome(commit, None)
+        assert built == bytes([OPCODE_COMMIT_WELCOME]) + MLS10_PUBLIC_MESSAGE_PREFIX + commit
 
     def test_wrong_opcode(self):
         data = bytes([29]) + b"\x01"
@@ -257,7 +276,10 @@ class TestBuildParseCommitWelcome:
 
     def test_empty_commit(self):
         built = build_commit_welcome(b"", None)
-        assert built == bytes([OPCODE_COMMIT_WELCOME])
+        assert built[0] == OPCODE_COMMIT_WELCOME
+        parsed_commit, parsed_welcome = parse_commit_welcome(built)
+        assert parsed_commit == b""
+        assert parsed_welcome is None
 
     def test_too_short(self):
         with pytest.raises(ValueError, match="too short"):

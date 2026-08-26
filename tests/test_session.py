@@ -70,6 +70,20 @@ def test_session_handle_external_sender_package_creates_group_and_encryptor():
     assert frame[-2:] == b"\xfa\xfa"  # DAVE magic
 
 
+def test_session_uses_channel_id_as_mls_group_id():
+    """Local group is created with channel_id as 8-byte big-endian MLS group ID."""
+    from sorrydave.session import mls_group_id_from_channel_id
+
+    channel_id = 1043272195868217368
+    session = DaveSession(local_user_id=222, channel_id=channel_id)
+    session.prepare_epoch(1)
+    session.handle_external_sender_package(_make_minimal_external_sender_package())
+    expected = mls_group_id_from_channel_id(channel_id)
+    assert session.group_id == expected
+    assert session._group is not None
+    assert session._group.group_id == expected
+
+
 def test_session_execute_transition_no_op():
     """execute_transition can be called without error; encryptor still works."""
     session = DaveSession(local_user_id=333)
@@ -87,6 +101,32 @@ def test_session_handle_commit_invalid_raises():
         session.handle_commit(0, b"invalid_commit_bytes")
 
 
+def test_session_foreign_initial_commit_waits_for_welcome():
+    """A losing epoch-0 committer discards candidates and waits for op30."""
+    session = DaveSession(local_user_id=445)
+    session._group = object()
+    session._outbound_staged_commits[b"own-candidate"] = object()
+    session._initial_commit_bytes = b"own-candidate"
+
+    session.handle_commit(0, b"foreign-candidate")
+
+    assert session._current_epoch == 0
+    assert session._outbound_staged_commits == {}
+    assert session._initial_commit_bytes is None
+
+
+def test_session_foreign_commit_without_own_candidate_waits_for_welcome():
+    """Pending joiners have no staged commit; foreign op29 still must not apply."""
+    session = DaveSession(local_user_id=446)
+    session._group = object()
+
+    session.handle_commit(0, b"established-group-commit")
+
+    assert session._current_epoch == 0
+    assert session._outbound_staged_commits == {}
+    assert session.is_media_ready is False
+
+
 def test_session_error_recovery_opcode_31_and_prepare_epoch():
     """After InvalidCommitError, app can build opcode 31 and call prepare_epoch(1)."""
     transition_id = 5
@@ -99,14 +139,12 @@ def test_session_error_recovery_opcode_31_and_prepare_epoch():
     assert kp_payload[0] == 26
 
 
-def test_session_leave_group_clears_state_and_returns_remove_proposal():
-    """leave_group after joining returns remove proposal and get_encryptor then raises RuntimeError."""
+def test_session_leave_group_clears_state_and_returns_none():
+    """leave_group clears state and returns None (opcode 27 is gateway-to-client only)."""
     session = DaveSession(local_user_id=666)
     session.prepare_epoch(1)
     session.handle_external_sender_package(_make_minimal_external_sender_package())
-    proposal = session.leave_group()
-    assert proposal is not None
-    assert len(proposal) > 0
+    assert session.leave_group() is None
     with pytest.raises(RuntimeError, match="No send ratchet"):
         session.get_encryptor()
 

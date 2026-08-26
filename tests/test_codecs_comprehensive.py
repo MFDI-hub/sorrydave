@@ -1,7 +1,6 @@
 """Comprehensive codec tests: VP8, H264, H265, AV1 unencrypted ranges and AV1 transform."""
 
 import pytest
-
 from sorrydave.media.codecs import (
     AV1_OBU_DROP_TYPES,
     H264_VCL_TYPES,
@@ -100,26 +99,25 @@ class TestH264UnencryptedRanges:
         assert _h264_unencrypted_ranges(b"") == []
 
     def test_non_vcl_nal_sps(self):
-        """SPS (type 7) should have 1-byte header unencrypted."""
+        """SPS (type 7) is fully unencrypted including the rewritten 4-byte start code."""
         frame = b"\x00\x00\x01\x67" + b"\xAA" * 10
         ranges = _h264_unencrypted_ranges(frame)
-        assert len(ranges) == 1
-        assert ranges[0].offset == 3
-        assert ranges[0].length == 1
+        assert ranges == [UnencryptedRange(offset=0, length=15)]
 
-    def test_vcl_nal_fully_encrypted(self):
-        """VCL types 1-5 produce no unencrypted ranges."""
+    def test_vcl_nal_header_and_pps_unencrypted(self):
+        """VCL types 1 and 5 leave start code + NAL header + PPS-ID bytes plaintext."""
         for nal_type in H264_VCL_TYPES:
-            frame = b"\x00\x00\x01" + bytes([nal_type]) + b"\xAA" * 10
+            frame = b"\x00\x00\x00\x01" + bytes([nal_type]) + b"\xAA" * 10
             ranges = _h264_unencrypted_ranges(frame)
-            assert ranges == [], f"VCL type {nal_type} should have no unencrypted ranges"
+            assert len(ranges) == 1
+            assert ranges[0].offset == 0
+            assert ranges[0].length >= 5
+            assert ranges[0].length < len(frame), f"VCL type {nal_type} must encrypt payload"
 
     def test_4_byte_start_code(self):
         frame = b"\x00\x00\x00\x01\x67" + b"\xAA" * 10
         ranges = _h264_unencrypted_ranges(frame)
-        assert len(ranges) == 1
-        assert ranges[0].offset == 4
-        assert ranges[0].length == 1
+        assert ranges == [UnencryptedRange(offset=0, length=15)]
 
     def test_multiple_nals(self):
         frame = (
@@ -128,10 +126,7 @@ class TestH264UnencryptedRanges:
             + b"\x00\x00\x01\x01" + b"\xCC" * 5
         )
         ranges = _h264_unencrypted_ranges(frame)
-        types_found = []
-        for r in ranges:
-            types_found.append(frame[r.offset] & 0x1F)
-        assert all(t not in H264_VCL_TYPES for t in types_found)
+        assert ranges == [UnencryptedRange(offset=0, length=26)]
 
     def test_no_start_code(self):
         frame = b"\xAA\xBB\xCC\xDD"
@@ -143,20 +138,21 @@ class TestH265UnencryptedRanges:
         assert _h265_unencrypted_ranges(b"") == []
 
     def test_non_vcl_vps(self):
-        """VPS: NAL type 32, should have 2-byte header unencrypted."""
-        nal_byte = (32 << 1) & 0x7E  # type 32
+        """VPS: NAL type 32, entire NAL unencrypted after 4-byte start-code rewrite."""
+        nal_byte = (32 << 1) & 0x7E
         frame = b"\x00\x00\x01" + bytes([nal_byte, 0x00]) + b"\xAA" * 10
         ranges = _h265_unencrypted_ranges(frame)
-        assert len(ranges) == 1
-        assert ranges[0].length == 2
+        assert ranges == [UnencryptedRange(offset=0, length=16)]
 
-    def test_vcl_nal_no_ranges(self):
-        """VCL types 0-31 should produce no unencrypted ranges."""
+    def test_vcl_nal_header_unencrypted(self):
+        """VCL types 0-31: 4-byte start code + 2-byte NAL header unencrypted."""
         for nal_type in [0, 1, 16, 31]:
             nal_byte = (nal_type << 1) & 0x7E
             frame = b"\x00\x00\x01" + bytes([nal_byte, 0x00]) + b"\xAA" * 10
             ranges = _h265_unencrypted_ranges(frame)
-            assert ranges == [], f"VCL type {nal_type} should have no unencrypted ranges"
+            assert ranges == [UnencryptedRange(offset=0, length=6)], (
+                f"VCL type {nal_type} should leave 6 header bytes unencrypted"
+            )
 
     def test_multiple_nals_mixed(self):
         vps_byte = (32 << 1) & 0x7E
@@ -168,7 +164,52 @@ class TestH265UnencryptedRanges:
             + b"\x00\x00\x01" + bytes([sps_byte, 0x00]) + b"\xCC" * 5
         )
         ranges = _h265_unencrypted_ranges(frame)
-        assert len(ranges) == 2
+        assert [(r.offset, r.length) for r in ranges] == [(0, 17), (22, 11)]
+
+
+class TestLibdaveCodecVectors:
+    """Fixture vectors adapted from libdave C++ codec tests."""
+
+    @staticmethod
+    def _hex_to_bytes(value: str) -> bytes:
+        return bytes.fromhex(value.replace(" ", ""))
+
+    def test_h264_short_idr_vector_exact_ranges(self):
+        # Source vector: cpp/test/codec_utils_tests.cpp (H264ShortIDROneByteExpGolomb)
+        frame_hex = (
+            "000000016742c00d8c8d40d0fbc900f08846a00000000168ce3c800000000165b8fafafa"
+        )
+        frame = self._hex_to_bytes(frame_hex)
+        ranges = _h264_unencrypted_ranges(frame)
+        assert [(r.offset, r.length) for r in ranges] == [(0, 33)]
+
+    def test_h264_two_slice_vector_exact_ranges(self):
+        # Source vector: cpp/test/codec_utils_tests.cpp (H264TwoSliceTest)
+        frame_hex = "0000000161e0fafafa0000000161e0fafafa"
+        frame = self._hex_to_bytes(frame_hex)
+        ranges = _h264_unencrypted_ranges(frame)
+        assert [(r.offset, r.length) for r in ranges] == [(0, 6), (9, 6)]
+
+    def test_h265_idr_vector_exact_ranges(self):
+        # Source vector: cpp/test/codec_utils_tests.cpp (H265IdrSlice)
+        # Adjacent unencrypted NALs merge (davey add_unencrypted_bytes).
+        frame_hex = (
+            "0000000140010c01ffff016000000300b0000003000003005d170240"
+            "00000001420101016000000300b0000003000003005da00280802d16205ee45914bff2e7f13fa2"
+            "000000014401c072f05324000000014e01051a47564adc5c4c433f94efc5113cd143a803ee0000ee02001fc8b88"
+            "0000000012801abab"
+        )
+        frame = self._hex_to_bytes(frame_hex)
+        ranges = _h265_unencrypted_ranges(frame)
+        assert [(r.offset, r.length) for r in ranges] == [(0, 119)]
+
+    def test_h265_short_start_code_vector_exact_ranges(self):
+        # Source vector: cpp/test/codec_utils_tests.cpp (H265SimpleThreeByteCodeExtension)
+        # 3-byte start code is rewritten to 4-byte; VCL header stays plaintext.
+        frame_hex = "0000010201abab"
+        frame = self._hex_to_bytes(frame_hex)
+        ranges = _h265_unencrypted_ranges(frame)
+        assert [(r.offset, r.length) for r in ranges] == [(0, 6)]
 
 
 class TestLEB128Internal:

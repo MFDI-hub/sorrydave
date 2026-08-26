@@ -6,9 +6,10 @@ Stores verified public keys per user for identity verification (protocol.md
 differs from the previously verified key.
 """
 
-import orjson
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Union
+
+import orjson
 
 
 @dataclass
@@ -19,12 +20,12 @@ class VerifiedIdentity:
     Attributes:
         user_id (int): Discord user ID (snowflake).
         public_key (bytes): Verified P256 public key (X9.62).
-        key_version (Optional[int]): Key version if persistent; None for ephemeral.
+        key_version (Union[int, None]): Key version if persistent; None for ephemeral.
     """
 
     user_id: int
     public_key: bytes
-    key_version: Optional[int] = None
+    key_version: Union[int, None] = None
 
 
 class VerificationStore:
@@ -44,7 +45,7 @@ class VerificationStore:
         self,
         user_id: int,
         public_key: bytes,
-        key_version: Optional[int] = None,
+        key_version: Union[int, None] = None,
     ) -> None:
         """
         Store a verified identity for a user.
@@ -54,7 +55,7 @@ class VerificationStore:
         Args:
             user_id (int): Verified user's Discord ID.
             public_key (bytes): Their P256 public key (X9.62).
-            key_version (Optional[int]): Key version for persistent keys; omit for ephemeral.
+            key_version (Union[int, None]): Key version for persistent keys; omit for ephemeral.
         """
         self._store[user_id] = VerifiedIdentity(
             user_id=user_id,
@@ -62,7 +63,7 @@ class VerificationStore:
             key_version=key_version,
         )
 
-    def get_verified(self, user_id: int) -> Optional[VerifiedIdentity]:
+    def get_verified(self, user_id: int) -> Union[VerifiedIdentity, None]:
         """
         Return the stored verified identity for a user, if any.
 
@@ -70,7 +71,7 @@ class VerificationStore:
             user_id (int): Discord user ID.
 
         Returns:
-            Optional[VerifiedIdentity]: Stored entry or None.
+            Union[VerifiedIdentity, None]: Stored entry or None.
         """
         return self._store.get(user_id)
 
@@ -121,8 +122,9 @@ class VerificationStore:
                 for e in self._store.values()
             ]
         }
-        with open(path, "w", encoding="utf-8") as f:
-            orjson.dumps(data, f, indent=2)
+        payload = orjson.dumps(data, option=orjson.OPT_INDENT_2)
+        with open(path, "wb") as f:
+            f.write(payload)
 
     def load_from_path(self, path: str) -> None:
         """
@@ -139,8 +141,8 @@ class VerificationStore:
 
         if not os.path.isfile(path):
             return
-        with open(path, encoding="utf-8") as f:
-            data = orjson.loads(f)
+        with open(path, "rb") as f:
+            data = orjson.loads(f.read())
         for item in data.get("entries", []):
             user_id = int(item["user_id"])
             public_key = base64.b64decode(item["public_key"])

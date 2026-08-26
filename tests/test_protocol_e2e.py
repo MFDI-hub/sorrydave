@@ -11,10 +11,7 @@ using the DAVE supplemental footer format.
 
 from __future__ import annotations
 
-import orjson
-
 import pytest
-
 from sorrydave.crypto.cipher import (
     DAVE_MAGIC,
     GCM_TAG_LENGTH,
@@ -24,17 +21,16 @@ from sorrydave.crypto.cipher import (
     uleb128_decode,
     uleb128_encode,
 )
-from sorrydave.crypto.ratchet import KEY_LENGTH, RATCHET_LABEL, KeyRatchet
+from sorrydave.crypto.ratchet import KEY_LENGTH, KeyRatchet
 from sorrydave.exceptions import DecryptionError
 from sorrydave.media.codecs import get_unencrypted_ranges
 from sorrydave.media.transform import (
-    MIN_SUPPLEMENTAL,
     SILENCE_PACKET,
     FrameDecryptor,
     FrameEncryptor,
     protocol_frame_check,
 )
-from sorrydave.types import ProtocolSupplementalData, UnencryptedRange
+from sorrydave.types import UnencryptedRange
 
 # Real secret_key from idk capture (op 4)
 REAL_SECRET_KEY = bytes(
@@ -271,7 +267,7 @@ class TestProtocolFrameStructure:
         body_start = len(encrypted) - suppl_size
         body = encrypted[body_start : len(encrypted) - 3]
         nonce, offset = uleb128_decode(body, 8)
-        assert nonce == 0  # first frame
+        assert nonce == 1  # libdave increments before encrypting the first frame
         assert offset > 8
 
     def test_protocol_frame_check_on_encrypted(self):

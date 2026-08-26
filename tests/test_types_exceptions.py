@@ -1,7 +1,8 @@
 """Comprehensive tests for types and exceptions modules."""
 
-import pytest
+import tempfile
 
+import pytest
 from sorrydave.exceptions import DaveProtocolError, DecryptionError, InvalidCommitError
 from sorrydave.types import (
     DaveConfiguration,
@@ -34,7 +35,7 @@ class TestUnencryptedRange:
 
     def test_hashable(self):
         r = UnencryptedRange(offset=0, length=10)
-        {r}  # should not raise
+        _ = {r}  # should not raise
 
 
 class TestProtocolSupplementalData:
@@ -85,9 +86,10 @@ class TestIdentityConfig:
         assert cfg.storage_path is None
 
     def test_custom(self):
-        cfg = IdentityConfig(is_persistent=True, storage_path="/tmp/keys")
+        storage_path = tempfile.gettempdir() + "/keys"
+        cfg = IdentityConfig(is_persistent=True, storage_path=storage_path)
         assert cfg.is_persistent is True
-        assert cfg.storage_path == "/tmp/keys"
+        assert cfg.storage_path == storage_path
 
     def test_frozen(self):
         cfg = IdentityConfig()

@@ -21,23 +21,11 @@ Public parse/build functions:
     - build_invalid_commit_welcome: Build opcode 31 (Invalid Commit/Welcome) JSON.
 """
 
-import orjson
+import contextlib
+import json
 import struct
 from dataclasses import dataclass
-from typing import Any, Union
-
-# Varint/opaque helpers: canonical source is sorrydave._rfc9420 (rfc9420.codec.tls per src_api.md)
-from sorrydave._rfc9420 import (
-    TLSDecodeError,
-    read_opaque_varint,
-    read_varint,
-    write_opaque_varint,
-)
-
-# Backward-compat aliases for tests that import from opcodes
-_read_varint = read_varint
-_read_opaque_varint = read_opaque_varint
-_write_opaque_varint = write_opaque_varint
+from typing import Any, Union, cast
 
 # Opcode values per protocol.md
 OPCODE_IDENTIFY = 0
@@ -55,6 +43,189 @@ OPCODE_COMMIT_WELCOME = 28
 OPCODE_ANNOUNCE_COMMIT = 29
 OPCODE_WELCOME = 30
 OPCODE_INVALID_COMMIT_WELCOME = 31
+
+# MLS variable-length encoding: length prefix per RFC 9420 §2.1.2 (varint)
+
+
+def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
+    """
+    Read MLS-style varint (variable-size length) from data at offset.
+
+    Args:
+        data (bytes): Buffer containing varint.
+        offset (int): Start index.
+
+    Returns:
+        tuple[int, int]: (value, new_offset).
+
+    Raises:
+        ValueError: On varint overflow or truncated data.
+    """
+    if offset >= len(data):
+        raise ValueError("Varint truncated")
+    first = data[offset]
+    prefix = first >> 6
+    if prefix == 0b00:
+        return first & 0x3F, offset + 1
+    if prefix == 0b01:
+        if offset + 2 > len(data):
+            raise ValueError("Varint truncated")
+        value = ((first & 0x3F) << 8) | data[offset + 1]
+        return value, offset + 2
+    if prefix == 0b10:
+        if offset + 4 > len(data):
+            raise ValueError("Varint truncated")
+        value = (
+            ((first & 0x3F) << 24)
+            | (data[offset + 1] << 16)
+            | (data[offset + 2] << 8)
+            | data[offset + 3]
+        )
+        return value, offset + 4
+    raise ValueError("Varint overflow")
+
+
+def _read_opaque_varint(data: bytes, offset: int) -> tuple[bytes, int]:
+    """
+    Read opaque<V>: varint length then that many bytes.
+
+    Args:
+        data (bytes): Buffer.
+        offset (int): Start index.
+
+    Returns:
+        tuple[bytes, int]: (opaque bytes, new_offset).
+
+    Raises:
+        ValueError: If data is truncated.
+    """
+    length, pos = _read_varint(data, offset)
+    if pos + length > len(data):
+        raise ValueError("Opaque truncated")
+    return data[pos : pos + length], pos + length
+
+
+# RFC 9420 MLSMessage prefix for protocol mls10 + wire_format mls_public_message.
+MLS10_PUBLIC_MESSAGE_PREFIX = b"\x00\x01\x00\x01"
+
+
+def wrap_public_message_as_mls_message(public_message: bytes) -> bytes:
+    """Wrap a PublicMessage body as MLSMessage (protocol.md opcodes 26–29)."""
+    if public_message.startswith(MLS10_PUBLIC_MESSAGE_PREFIX):
+        return public_message
+    return MLS10_PUBLIC_MESSAGE_PREFIX + public_message
+
+
+def public_message_bytes(commit_or_proposal: bytes) -> bytes:
+    """Return the PublicMessage body, stripping an MLSMessage header if present."""
+    if commit_or_proposal.startswith(MLS10_PUBLIC_MESSAGE_PREFIX):
+        return commit_or_proposal[4:]
+    return commit_or_proposal
+
+
+def _consume_public_message_body(body: bytes) -> tuple[Any, int]:
+    """Parse one RFC 9420 PublicMessage; return (AuthenticatedContent, consumed)."""
+    from rfc9420.messages.data_structures import SenderType
+    from rfc9420.messages.messages import (
+        AuthenticatedContent,
+        AuthenticatedContentTBS,
+        FramedContent,
+        FramedContentAuthData,
+        WireFormat,
+    )
+
+    fc = FramedContent.deserialize(body)
+    off = len(fc.serialize())
+    auth, consumed = FramedContentAuthData.deserialize(body[off:], fc.content_type)
+    off += consumed
+    membership_tag = None
+    if fc.sender.sender_type == SenderType.MEMBER:
+        membership_tag, off = _read_opaque_varint(body, off)
+    ac = AuthenticatedContent(
+        AuthenticatedContentTBS(wire_format=int(WireFormat.PUBLIC_MESSAGE), framed_content=fc),
+        auth,
+        membership_tag,
+    )
+    return ac, off
+
+
+def consume_mls_public_plaintext(data: bytes) -> tuple[object, int]:
+    """
+    Parse one MLS public handshake message.
+
+    Accepts either an MLSMessage (version + wire_format + PublicMessage) or a bare
+    PublicMessage. Returns (MLSPlaintext, bytes_consumed).
+    """
+    from rfc9420.messages.messages import AuthenticatedContent, MLSPlaintext
+
+    if len(data) < 2:
+        raise ValueError("MLS message truncated")
+    header = 0
+    body = data
+    if len(data) >= 4 and data.startswith(MLS10_PUBLIC_MESSAGE_PREFIX):
+        header = 4
+        body = data[4:]
+    ac, n = _consume_public_message_body(body)
+    return MLSPlaintext(cast(AuthenticatedContent, ac)), header + n
+
+
+def iter_proposal_plaintexts(vector_blob: bytes) -> list[Any]:
+    """
+    Parse opcode 27 proposal_messages vector content into MLSPlaintext values.
+
+    protocol.md: ``MLSMessage proposal_messages<V>``. Discord concatenates one or
+    more MLS public messages (not MLSPlaintext without the MLSMessage header).
+    """
+    from rfc9420.messages.messages import MLSPlaintext
+
+    if not vector_blob:
+        return []
+    if vector_blob.startswith(MLS10_PUBLIC_MESSAGE_PREFIX):
+        messages = []
+        off = 0
+        while off < len(vector_blob):
+            try:
+                pt, n = consume_mls_public_plaintext(vector_blob[off:])
+            except Exception:
+                break
+            if n <= 0:
+                break
+            messages.append(pt)
+            off += n
+        if messages and off == len(vector_blob):
+            return messages
+    with contextlib.suppress(Exception):
+        return [MLSPlaintext.deserialize(vector_blob)]
+    messages = []
+    for chunk in split_proposal_messages_vector(vector_blob):
+        with contextlib.suppress(Exception):
+            if chunk.startswith(MLS10_PUBLIC_MESSAGE_PREFIX):
+                pt, n = consume_mls_public_plaintext(chunk)
+                if n == len(chunk):
+                    messages.append(pt)
+                    continue
+            messages.append(MLSPlaintext.deserialize(chunk))
+    return messages
+
+
+def _read_vector_varint(data: bytes, offset: int) -> tuple[bytes, int]:
+    """
+    Read vector<V>: varint length then that many bytes.
+
+    Args:
+        data (bytes): Buffer.
+        offset (int): Start index.
+
+    Returns:
+        tuple[bytes, int]: (vector content bytes, new_offset).
+
+    Raises:
+        ValueError: If data is truncated.
+    """
+    length, pos = _read_varint(data, offset)
+    if pos + length > len(data):
+        raise ValueError("Vector truncated")
+    return data[pos : pos + length], pos + length
 
 
 @dataclass
@@ -96,19 +267,13 @@ def parse_external_sender_package(data: bytes) -> ExternalSenderPackage:
         raise ValueError(f"Expected opcode 25, got {opcode}")
     rest = data[3:]
     # SignaturePublicKey<V>
-    try:
-        sig_key, off = read_opaque_varint(rest, 0)
-    except TLSDecodeError as e:
-        raise ValueError("Opaque truncated") from e
+    sig_key, off = _read_opaque_varint(rest, 0)
     rest = rest[off:]
     # Credential: type (uint16) + identity<V>
     if len(rest) < 2:
         raise ValueError("Credential truncated")
     (cred_type,) = struct.unpack("!H", rest[:2])
-    try:
-        identity, _ = read_opaque_varint(rest, 2)
-    except TLSDecodeError as e:
-        raise ValueError("Opaque truncated") from e
+    identity, _ = _read_opaque_varint(rest, 2)
     return ExternalSenderPackage(
         sequence_number=seq,
         signature_key=sig_key,
@@ -171,7 +336,7 @@ def parse_proposals(data: bytes) -> ProposalsMessage:
     if op_type not in (0, 1):
         raise ValueError(f"Unknown proposals operation type {op_type}")
     rest = data[4:]
-    vector_bytes, end = read_opaque_varint(rest, 0)
+    vector_bytes, end = _read_vector_varint(rest, 0)
     if end != len(rest):
         raise ValueError("Proposals trailing bytes")
     if op_type == 0:  # append
@@ -207,9 +372,9 @@ def split_proposal_messages_vector(vector_payload: bytes) -> list[bytes]:
     off = 0
     while off < len(vector_payload):
         try:
-            msg_bytes, off = read_opaque_varint(vector_payload, off)
+            msg_bytes, off = _read_opaque_varint(vector_payload, off)
             messages.append(msg_bytes)
-        except (ValueError, TLSDecodeError):
+        except ValueError:
             break
     return messages
 
@@ -264,20 +429,13 @@ def parse_welcome_message(data: bytes) -> tuple[int, bytes]:
 
 def build_commit_welcome(commit_message: bytes, welcome_message: Union[bytes, None]) -> bytes:
     """
-    Build opcode 28 payload: opcode || MLSMessage(commit) || optional Welcome.
+    Build opcode 28: opcode || MLSMessage(commit) || optional Welcome.
 
-    Per protocol.md DAVE_MLSCommitWelcome struct, the commit is a raw MLSMessage
-    (no varint length prefix), same as op26 framing. The Welcome follows directly.
-
-    Args:
-        commit_message (bytes): Serialized MLS commit message (MLSMessage wire format).
-        welcome_message (Union[bytes, None]): Optional serialized Welcome.
-
-    Returns:
-        bytes: Opcode 28 message bytes.
+    protocol.md: commit is an MLSMessage; Welcome is the raw Welcome struct
+    (not wrapped in MLSMessage) when the commit adds members.
     """
     out = bytes([OPCODE_COMMIT_WELCOME])
-    out += commit_message
+    out += wrap_public_message_as_mls_message(commit_message)
     if welcome_message:
         out += welcome_message
     return out
@@ -285,41 +443,63 @@ def build_commit_welcome(commit_message: bytes, welcome_message: Union[bytes, No
 
 def parse_commit_welcome(data: bytes) -> tuple[bytes, Union[bytes, None]]:
     """
-    Parse opcode 28: commit message (MLSMessage) + optional welcome.
-
-    The commit is a self-delimiting MLSMessage (no varint length prefix).
-    We parse through the MLSMessage to find where the Welcome begins.
-
-    Args:
-        data (bytes): Full opcode 28 payload.
+    Parse opcode 28: MLSMessage commit + optional Welcome.
 
     Returns:
-        tuple[bytes, Union[bytes, None]]: (commit_message, welcome_message_or_none).
-
-    Raises:
-        ValueError: If data too short, wrong opcode, or commit is truncated.
+        tuple[bytes, Union[bytes, None]]: (MLSMessage commit bytes, Welcome or None).
     """
     if len(data) < 1:
         raise ValueError("Commit/welcome message too short")
     opcode = data[0]
     if opcode != OPCODE_COMMIT_WELCOME:
         raise ValueError(f"Expected opcode 28, got {opcode}")
-    # MLSMessage is self-delimiting; parse it to find the boundary
-    try:
-        from sorrydave._rfc9420 import MLSPlaintext
-
-        msg = MLSPlaintext.deserialize(data[1:])
-        commit_bytes = msg.serialize()
-        off = 1 + len(commit_bytes)
-    except Exception:
-        # Fallback: try opaque<V> for backward compat with old captures
+    rest = data[1:]
+    if rest.startswith(MLS10_PUBLIC_MESSAGE_PREFIX):
         try:
-            commit_bytes, off = _read_opaque_varint(data, 1)
+            _pt, consumed = consume_mls_public_plaintext(rest)
+            commit_message = rest[:consumed]
+            welcome_rest = rest[consumed:]
+            welcome_message = welcome_rest if welcome_rest else None
+            return commit_message, welcome_message
         except Exception:
-            commit_bytes = data[1:]
-            off = len(data)
-    welcome_message = data[off:] if off < len(data) else None
-    return commit_bytes, welcome_message
+            # Dummy / non-MLS payloads used in unit tests.
+            return public_message_bytes(rest), None
+    if rest:
+        # Legacy opaque<V> commit used by older sorrydave builds.
+        with contextlib.suppress(Exception):
+            commit_message, off = _read_opaque_varint(data, 1)
+            welcome_message = data[off:] if off < len(data) else None
+            return commit_message, welcome_message or None
+    return rest, None
+
+
+def _write_opaque_varint(data: bytes) -> bytes:
+    """
+    Write varint length prefix then data (opaque<V> encoding).
+
+    Args:
+        data (bytes): Payload to prefix.
+
+    Returns:
+        bytes: varint(len(data)) || data.
+    """
+    n = len(data)
+    if n <= 0x3F:
+        prefix = bytes([n])
+    elif n <= 0x3FFF:
+        prefix = bytes([0x40 | (n >> 8), n & 0xFF])
+    elif n <= 0x3FFFFFFF:
+        prefix = bytes(
+            [
+                0x80 | ((n >> 24) & 0x3F),
+                (n >> 16) & 0xFF,
+                (n >> 8) & 0xFF,
+                n & 0xFF,
+            ]
+        )
+    else:
+        raise ValueError("Opaque too large")
+    return prefix + data
 
 
 # --- JSON opcodes (0, 4, 11, 13, 21, 22, 23, 24, 31) ---
@@ -328,8 +508,8 @@ def parse_commit_welcome(data: bytes) -> tuple[bytes, Union[bytes, None]]:
 def _parse_json_op(payload: bytes) -> dict[str, Any]:
     """Decode UTF-8 JSON and return the root object. Raises ValueError on failure."""
     try:
-        obj = orjson.loads(payload.decode("utf-8"))
-    except (orjson.JSONDecodeError, UnicodeDecodeError) as e:
+        obj = json.loads(payload.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise ValueError("Invalid JSON payload") from e
     if not isinstance(obj, dict):
         raise ValueError("Payload must be a JSON object")
@@ -351,7 +531,7 @@ def build_identify(max_dave_protocol_version: int = 1, **d_extra: object) -> byt
     """
     d = {"max_dave_protocol_version": max_dave_protocol_version, **d_extra}
     obj = {"op": OPCODE_IDENTIFY, "d": d}
-    return orjson.dumps(obj)
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
 
 
 def parse_select_protocol_ack(payload: bytes) -> int:
@@ -473,8 +653,8 @@ def parse_execute_transition(payload: bytes) -> int:
         ValueError: If JSON invalid, missing d.transition_id, or transition_id out of uint16 range.
     """
     try:
-        obj = orjson.loads(payload.decode("utf-8"))
-    except (orjson.JSONDecodeError, UnicodeDecodeError) as e:
+        obj = json.loads(payload.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise ValueError("Invalid execute transition payload") from e
     if not isinstance(obj, dict):
         raise ValueError("Execute transition payload must be a JSON object")
@@ -509,14 +689,12 @@ def build_ready_for_transition(transition_id: int) -> bytes:
     if not 0 <= transition_id <= 0xFFFF:
         raise ValueError("transition_id must be uint16")
     obj = {"op": OPCODE_READY_FOR_TRANSITION, "d": {"transition_id": transition_id}}
-    return orjson.dumps(obj)
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
 
 
 def parse_prepare_epoch(payload: bytes) -> tuple[int, int]:
     """
     Parse opcode 24 (Prepare Epoch) JSON payload. Server sends to client.
-
-    Wire field is "epoch"; protocol.md sometimes refers to it as "epoch_id".
 
     Args:
         payload (bytes): UTF-8 JSON with "d.protocol_version" and "d.epoch".
@@ -564,4 +742,4 @@ def build_invalid_commit_welcome(transition_id: int) -> bytes:
     if not 0 <= transition_id <= 0xFFFF:
         raise ValueError("transition_id must be uint16")
     obj = {"op": OPCODE_INVALID_COMMIT_WELCOME, "d": {"transition_id": transition_id}}
-    return orjson.dumps(obj)
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")

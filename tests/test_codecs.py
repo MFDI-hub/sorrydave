@@ -1,4 +1,3 @@
-import pytest
 from sorrydave.media.codecs import get_unencrypted_ranges
 from sorrydave.types import UnencryptedRange
 
@@ -38,37 +37,33 @@ def test_unknown_codec():
     assert get_unencrypted_ranges(b"data", "FOO") == []
 
 
-def test_h264_non_vcl_one_byte_header():
+def test_h264_non_vcl_entire_nal_unencrypted():
     """
-    H264 non-VCL NAL (e.g. type 7 SPS) gets 1-byte header unencrypted.
+    H264 non-VCL NAL (e.g. type 7 SPS) stays fully plaintext, including 4-byte start code.
     """
-    # Annex B: 0x00 0x00 0x01 start code, then NAL type 7 (SPS) = non-VCL -> 1 byte unencrypted
-    frame = b"\x00\x00\x01\x07\x00\x00\x00\x01\x01\x02\x03"  # NAL 7, then NAL 1 (VCL)
+    frame = b"\x00\x00\x01\x67" + b"\xAA" * 10
     ranges = get_unencrypted_ranges(frame, "H264")
-    assert UnencryptedRange(offset=3, length=1) in ranges  # byte at 3 is NAL 7 header
-    # NAL type 1 is VCL so no unencrypted range for second NAL
-    assert len(ranges) == 1
+    assert ranges == [UnencryptedRange(offset=0, length=15)]
 
 
-def test_h264_vcl_fully_encrypted():
+def test_h264_vcl_header_and_pps_unencrypted():
     """
-    H264 VCL NAL (type 1) is fully encrypted; no unencrypted ranges.
+    H264 VCL slice (type 1): 4-byte start code, NAL header, and PPS-ID bytes unencrypted.
     """
-    # Single VCL NAL (type 1)
-    frame = b"\x00\x00\x01\x01\xaa\xbb\xcc"
+    frame = b"\x00\x00\x00\x01\x01" + b"\xAA" * 10
     ranges = get_unencrypted_ranges(frame, "H264")
-    assert ranges == []
+    assert ranges == [UnencryptedRange(offset=0, length=6)]
+    assert ranges[0].length < len(frame)
 
 
-def test_h265_non_vcl_two_byte_header():
+def test_h265_non_vcl_entire_nal_unencrypted():
     """
-    H265 non-VCL NAL gets 2-byte header unencrypted.
+    H265 non-VCL NAL (VPS type 32) stays fully plaintext, including 4-byte start code.
     """
-    # NAL type 33 (SPS) = non-VCL, 2-byte header; first NAL has at least 2 bytes
-    frame = b"\x00\x00\x01\x42\x00\xaa\x00\x00\x00\x01\x40\x01"
+    nal_byte = (32 << 1) & 0x7E
+    frame = b"\x00\x00\x00\x01" + bytes([nal_byte, 0x00]) + b"\xAA" * 10
     ranges = get_unencrypted_ranges(frame, "H265")
-    assert len(ranges) >= 1
-    assert ranges[0].offset == 3 and ranges[0].length == 2
+    assert ranges == [UnencryptedRange(offset=0, length=len(frame))]
 
 
 def test_av1_obu_header_only():

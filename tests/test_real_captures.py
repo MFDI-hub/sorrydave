@@ -9,15 +9,13 @@ messages from real Discord sessions.
 from __future__ import annotations
 
 import base64
-import orjson
 import struct
 
-import pytest
-
+import orjson
 from sorrydave.mls.opcodes import (
-    ExternalSenderPackage,
     OPCODE_EXTERNAL_SENDER_PACKAGE,
     OPCODE_KEY_PACKAGE,
+    ExternalSenderPackage,
     parse_external_sender_package,
     parse_select_protocol_ack,
 )

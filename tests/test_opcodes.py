@@ -1,6 +1,6 @@
 """Tests for DAVE Voice Gateway opcode parsing and building (opcodes 22, 25-31)."""
 
-import orjson
+import json
 import struct
 
 import pytest
@@ -37,7 +37,9 @@ def _varint(n: int) -> bytes:
     if n <= 0x3FFF:
         return bytes([0x40 | (n >> 8), n & 0xFF])
     if n <= 0x3FFFFFFF:
-        return bytes([0x80 | ((n >> 24) & 0x3F), (n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF])
+        return bytes(
+            [0x80 | ((n >> 24) & 0x3F), (n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF]
+        )
     raise ValueError("value too large for MLS varint")
 
 
@@ -48,7 +50,9 @@ def test_parse_execute_transition_valid():
     payload = b'{"op":22,"d":{"transition_id":10}}'
     assert parse_execute_transition(payload) == 10
     assert parse_execute_transition(b'{"op": 22, "d": {"transition_id": 0}}') == 0
-    assert parse_execute_transition(b'{"op": 22, "d": {"transition_id": 65535}}') == 65535
+    assert (
+        parse_execute_transition(b'{"op": 22, "d": {"transition_id": 65535}}') == 65535
+    )
 
 
 def test_parse_execute_transition_missing_d():
@@ -84,12 +88,12 @@ def test_parse_execute_transition_transition_id_out_of_range():
 def test_build_invalid_commit_welcome_valid():
     """build_invalid_commit_welcome produces JSON with op 31 and d.transition_id."""
     out = build_invalid_commit_welcome(0)
-    obj = orjson.loads(out.decode("utf-8"))
+    obj = json.loads(out.decode("utf-8"))
     assert obj["op"] == OPCODE_INVALID_COMMIT_WELCOME
     assert obj["d"]["transition_id"] == 0
 
     out = build_invalid_commit_welcome(32)
-    obj = orjson.loads(out.decode("utf-8"))
+    obj = json.loads(out.decode("utf-8"))
     assert obj["d"]["transition_id"] == 32
 
 
@@ -137,7 +141,7 @@ def test_parse_external_sender_package_too_short():
     """parse_external_sender_package raises when payload too short or truncated."""
     with pytest.raises(ValueError, match="too short"):
         parse_external_sender_package(b"\x00\x00")
-    # 3 bytes passes length check but rest is empty -> varint/opaque truncated
+    # 3 bytes passes length check but rest is empty -> varint truncated
     with pytest.raises(ValueError, match="truncated"):
         parse_external_sender_package(b"\x00\x00\x19")
 
@@ -200,16 +204,20 @@ def test_build_commit_welcome_commit_only():
     commit = b"commit_bytes"
     out = build_commit_welcome(commit, None)
     assert out[0] == OPCODE_COMMIT_WELCOME
-    assert out[1:] == commit
+    parsed_commit, parsed_welcome = parse_commit_welcome(out)
+    assert parsed_commit == commit
+    assert parsed_welcome is None
 
 
 def test_build_commit_welcome_with_welcome():
-    """build_commit_welcome with welcome message includes both commit and welcome in output."""
+    """build_commit_welcome appends Welcome after the MLSMessage commit (protocol.md)."""
+    from sorrydave.mls.opcodes import MLS10_PUBLIC_MESSAGE_PREFIX
+
     commit = b"commit"
     welcome = b"welcome"
     out = build_commit_welcome(commit, welcome)
     assert out[0] == OPCODE_COMMIT_WELCOME
-    assert out[1:] == commit + welcome
+    assert out == bytes([OPCODE_COMMIT_WELCOME]) + MLS10_PUBLIC_MESSAGE_PREFIX + commit + welcome
 
 
 def test_parse_commit_welcome_wrong_opcode():

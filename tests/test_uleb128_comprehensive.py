@@ -1,7 +1,6 @@
 """Comprehensive ULEB128 tests: encoding, decoding, roundtrip, edge cases, and error conditions."""
 
 import pytest
-
 from sorrydave.crypto.cipher import uleb128_decode, uleb128_encode
 
 

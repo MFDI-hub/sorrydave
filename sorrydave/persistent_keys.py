@@ -7,7 +7,7 @@ No I/O to Discord API; the caller builds the HTTP request from the returned payl
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Union
 
 # MLS 1.0 Discord Self Signature label: 0x1c (varint length 28) + 28 bytes per protocol.md
 DISCORD_SELF_SIGNATURE_LABEL = b"\x1cMLS 1.0 DiscordSelfSignature"
@@ -128,7 +128,7 @@ def save_persistent_signature_key(storage_path: str, private_key_der: bytes) -> 
         f.write(pem)
 
 
-def load_persistent_signature_key(storage_path: str) -> Optional[bytes]:
+def load_persistent_signature_key(storage_path: str) -> Union[bytes, None]:
     """
     Load a persistent signature private key from disk.
 
@@ -138,7 +138,7 @@ def load_persistent_signature_key(storage_path: str) -> Optional[bytes]:
         storage_path (str): File path to read.
 
     Returns:
-        Optional[bytes]: P256 private key in DER (PKCS#8), or None if not found.
+        Union[bytes, None]: P256 private key in DER (PKCS#8), or None if not found.
     """
     import os
 

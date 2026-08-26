@@ -1,15 +1,14 @@
-"""MLS group state management and Voice Gateway opcode handling (rfc9420 integration).
+"""MLS group state management and Voice Gateway opcode handling (rfc9420 integration)."""
 
-Re-exports a subset of rfc9420 via sorrydave._rfc9420 (see project src_api.md for canonical API map):
-codec.tls (TLSDecodeError, read_varint, read_opaque_varint, write_varint, write_opaque_varint),
-mls.group (Group, get_commit_sender_leaf_index), and DefaultCryptoProvider for convenience.
-"""
-
-from sorrydave._rfc9420 import (
+from rfc9420 import (
     DefaultCryptoProvider,
-    Group,
     TLSDecodeError,
     get_commit_sender_leaf_index,
+)
+from rfc9420 import (
+    MLSGroup as Group,
+)
+from rfc9420.codec.tls import (
     read_opaque_varint,
     read_varint,
     write_opaque_varint,

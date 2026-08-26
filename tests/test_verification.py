@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import orjson
 import os
 import tempfile
 
-import pytest
-
+import orjson
 from sorrydave.verification import VerificationStore, VerifiedIdentity
 
 
@@ -123,8 +121,8 @@ class TestVerificationStorePersistence:
         try:
             store.save_to_path(path)
 
-            with open(path, encoding="utf-8") as f:
-                data = orjson.loads(f)
+            with open(path, "rb") as f:
+                data = orjson.loads(f.read())
             assert "entries" in data
             assert len(data["entries"]) == 2
 
@@ -151,19 +149,20 @@ class TestVerificationStorePersistence:
         store = VerificationStore()
         store.add_verified(1, b"existing_key")
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as f:
             path = f.name
-            orjson.dumps(
-                {
-                    "entries": [
-                        {
-                            "user_id": 2,
-                            "public_key": "AAAA",
-                            "key_version": 1,
-                        }
-                    ]
-                },
-                f,
+            f.write(
+                orjson.dumps(
+                    {
+                        "entries": [
+                            {
+                                "user_id": 2,
+                                "public_key": "AAAA",
+                                "key_version": 1,
+                            }
+                        ]
+                    }
+                )
             )
         try:
             store.load_from_path(path)
@@ -179,19 +178,20 @@ class TestVerificationStorePersistence:
         import base64
 
         new_key = b"\x04" + b"\xff" * 32
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as f:
             path = f.name
-            orjson.dumps(
-                {
-                    "entries": [
-                        {
-                            "user_id": 1,
-                            "public_key": base64.b64encode(new_key).decode(),
-                            "key_version": 2,
-                        }
-                    ]
-                },
-                f,
+            f.write(
+                orjson.dumps(
+                    {
+                        "entries": [
+                            {
+                                "user_id": 1,
+                                "public_key": base64.b64encode(new_key).decode(),
+                                "key_version": 2,
+                            }
+                        ]
+                    }
+                )
             )
         try:
             store.load_from_path(path)
@@ -207,8 +207,8 @@ class TestVerificationStorePersistence:
             path = f.name
         try:
             store.save_to_path(path)
-            with open(path, encoding="utf-8") as f:
-                data = orjson.loads(f)
+            with open(path, "rb") as f:
+                data = orjson.loads(f.read())
             assert data == {"entries": []}
         finally:
             os.unlink(path)

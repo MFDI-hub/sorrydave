@@ -3,8 +3,11 @@
 import time
 
 import pytest
-
-from sorrydave.crypto.ratchet import KEY_LENGTH, RATCHET_LABEL, KeyRatchet, sender_base_secret_from_exporter
+from sorrydave.crypto.ratchet import (
+    KEY_LENGTH,
+    KeyRatchet,
+    sender_base_secret_from_exporter,
+)
 
 
 class TestKeyRatchetInit:
@@ -123,10 +126,14 @@ class TestKeyRatchetForwardGap:
 class TestKeyRatchetEviction:
     def test_eviction_after_retention(self):
         r = KeyRatchet(b"\x01" * 16, retention_seconds=0.05, max_forward_gap=1000)
-        k0 = r.get_key_for_generation(0)
+        r.get_key_for_generation(0)
         time.sleep(0.1)
-        k0_after = r.get_key_for_generation(0)
-        assert k0 == k0_after
+        assert r.get_key_for_generation(0)
+        r.get_key_for_generation(1)
+        time.sleep(0.1)
+        r.get_key_for_generation(1)
+        with pytest.raises(ValueError, match="erased"):
+            r.get_key_for_generation(0)
 
     def test_non_expired_entries_kept(self):
         r = KeyRatchet(b"\x01" * 16, retention_seconds=10.0)
@@ -154,6 +161,14 @@ class TestKeyRatchetAdvanceEpoch:
         r = KeyRatchet(b"\x01" * 16)
         with pytest.raises(ValueError, match="16 bytes"):
             r.advance_epoch(b"\x02" * 8)
+
+
+class TestDaveyHashRatchetVector:
+    def test_generation_0_key(self):
+        r = KeyRatchet(bytes.fromhex("cedd61b1b8a1ca69046554282cf70b7b"))
+        assert r.get_key_for_generation(0) == bytes.fromhex(
+            "7530f9a9945e2d2e06d0651f7b2a864b"
+        )
 
 
 class TestSenderBaseSecretFromExporter:

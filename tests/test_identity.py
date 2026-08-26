@@ -1,5 +1,4 @@
-import pytest
-from sorrydave.identity import displayable_code, generate_fingerprint, epoch_authenticator_display
+from sorrydave.identity import displayable_code, epoch_authenticator_display, generate_fingerprint
 
 
 def test_displayable_code():

@@ -58,7 +58,7 @@ sequenceDiagram
 
 ## Session lifecycle (high level)
 
-1. **Create session**: `DaveSession(local_user_id=...)`
+1. **Create session**: `DaveSession(local_user_id=..., channel_id=...)`
 2. **Prepare epoch 1**: `prepare_epoch(1)` → send returned bytes as opcode 26.
 3. **Receive opcode 25**: `handle_external_sender_package(package_bytes)` (creates group when key package was already prepared).
 4. **Receive opcode 27**: `handle_proposals(proposal_bytes)` → if return value is not None, send it as opcode 28.
@@ -79,11 +79,11 @@ Media frames are not encrypted as one contiguous block. Some bytes are left **un
 |-------|-------------------|
 | OPUS, VP9 | None (full frame encrypted). |
 | VP8 | First 1 byte (delta) or 10 bytes (key frame), per P bit. |
-| H264 | 1-byte NAL header for non-VCL NALs; VCL encrypted. |
-| H265/HEVC | 2-byte NAL header for non-VCL NALs. |
+| H264 | 4-byte start codes always plaintext. Slice/IDR (types 1, 5): NAL header + exp-golomb through PPS ID. Other NALs: entire unit. |
+| H265/HEVC | 4-byte start codes always plaintext. VCL (type < 32): 2-byte NAL header. Non-VCL: entire unit. |
 | AV1 | OBU header, optional extension, optional size (LEB128); payload encrypted. OBU types 2, 8, 15 skipped. |
 
-For H264/H265, 3-byte start codes (`0x000001`) in unencrypted sections are expanded to 4-byte (`0x00000001`) per protocol. The **supplemental footer** (at the end of each protocol frame) stores the 8-byte GCM tag, ULEB128 nonce, ULEB128 offset/length pairs for unencrypted ranges, size byte, and magic `0xFAFA`.
+For H264/H265, Annex B start codes are rewritten to 4-byte (`0x00000001`) and left unencrypted, matching libdave/davey. The **supplemental footer** (at the end of each protocol frame) stores the 8-byte GCM tag, ULEB128 nonce, ULEB128 offset/length pairs for unencrypted ranges, size byte, and magic `0xFAFA`.
 
 ### Frame layout
 
@@ -112,7 +112,7 @@ The decryptor parses the footer to recover the nonce (and thus the key generatio
 ## Sender key ratchet
 
 - Each **sender** (identified by user ID) has a **base secret** from the MLS exporter: `export_secret("Discord Secure Frames v0", context=sender_user_id_le, 16)`.
-- From that, **KeyRatchet** derives a 128-bit AES key per **generation**. Generation is taken from the high byte of the 32-bit nonce in the frame footer.
+- From that, **KeyRatchet** (RFC 9420 §9.1 HashRatchet) derives a 128-bit AES key per **generation** via chained `ExpandWithLabel`. Generation is taken from the high byte of the 32-bit nonce in the frame footer.
 - **Encryptor**: Uses a monotonic nonce; generation = nonce >> 24; key = ratchet.get_key_for_generation(generation).
 - **Decryptor**: Reads footer, gets generation from nonce, looks up key (or derives and caches). Rejects **nonce reuse** and enforces **max forward gap** (DoS protection).
 - When the epoch changes (commit/welcome/execute transition), the session refreshes ratchets from the new exporter state.
@@ -120,7 +120,7 @@ The decryptor parses the footer to recover the nonce (and thus the key generatio
 ### Step-by-step (for implementers)
 
 1. **Base secret**: For each sender (including the local user), the session obtains a 16-byte base secret from the MLS group exporter with context = sender user ID (little-endian bytes).
-2. **KeyRatchet**: One ratchet per sender. Given a **generation** index (0, 1, 2, …), the ratchet derives a 128-bit AES key via HKDF from the base secret and generation. Keys are derived on demand and (for the decryptor) cached.
+2. **KeyRatchet**: One ratchet per sender. Given a **generation** index (0, 1, 2, …), the ratchet advances an MLS HashRatchet (`ExpandWithLabel` for `"key"` / `"nonce"` / `"secret"`). The 12-byte ratchet nonce is unused; DAVE GCM uses `8 zero bytes || truncated_nonce_le`. Keys are derived on demand and (for the decryptor) cached. Erased generations cannot be re-derived.
 3. **Encryptor**: For each outgoing frame, the encryptor uses a monotonic 32-bit nonce. The **generation** is the high byte (`nonce >> 24`). The ratchet provides the key for that generation; the nonce (truncated) and tag are stored in the frame footer.
 4. **Decryptor**: Reads the supplemental footer from the incoming frame to get the nonce and generation. Looks up or derives the key for that generation. Verifies the 8-byte GCM tag and decrypts. Rejects the frame on **nonce reuse** (same nonce twice) or if the generation is too far ahead (**max forward gap**) to limit DoS from forced key derivation.
 5. **Epoch change**: After `handle_commit`, `handle_welcome`, or `execute_transition`, the session discards or refreshes ratchets so send/receive keys come from the new MLS exporter state.

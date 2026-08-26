@@ -1,10 +1,10 @@
 """Comprehensive frame encryptor/decryptor and protocol_frame_check tests."""
 
 import pytest
-
 from sorrydave.crypto.cipher import DAVE_MAGIC, uleb128_encode
 from sorrydave.crypto.ratchet import KeyRatchet
 from sorrydave.exceptions import DecryptionError
+from sorrydave.media.codecs import transform_h26x_frame_for_encrypt
 from sorrydave.media.transform import (
     MIN_SUPPLEMENTAL,
     SILENCE_PACKET,
@@ -18,7 +18,6 @@ from sorrydave.media.transform import (
     protocol_frame_check,
 )
 from sorrydave.types import UnencryptedRange
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -156,6 +155,16 @@ class TestParseSupplementalFromTail:
         with pytest.raises(DecryptionError, match="Overlapping"):
             _parse_supplemental_from_tail(frame)
 
+    def test_truncated_range_pair_raises(self):
+        tag = b"\xAA" * 8
+        body = tag + uleb128_encode(0)
+        # Range offset present, range length missing.
+        body += uleb128_encode(4)
+        suppl_size = len(body) + 3
+        frame = b"\x00" * 20 + body + bytes([suppl_size]) + DAVE_MAGIC
+        with pytest.raises(DecryptionError, match="Truncated range"):
+            _parse_supplemental_from_tail(frame)
+
 
 # ---------------------------------------------------------------------------
 # FrameEncryptor
@@ -255,12 +264,14 @@ class TestFrameDecryptor:
 
     def test_roundtrip_h264(self):
         frame = b"\x00\x00\x01\x67" + b"\xDD" * 20
-        assert self._encrypt_then_decrypt(frame, "H264") == frame
+        expected, _ = transform_h26x_frame_for_encrypt(frame, h265=False)
+        assert self._encrypt_then_decrypt(frame, "H264") == expected
 
     def test_roundtrip_h265(self):
         vps_byte = (32 << 1) & 0x7E
         frame = b"\x00\x00\x01" + bytes([vps_byte, 0x00]) + b"\xEE" * 20
-        assert self._encrypt_then_decrypt(frame, "H265") == frame
+        expected, _ = transform_h26x_frame_for_encrypt(frame, h265=True)
+        assert self._encrypt_then_decrypt(frame, "H265") == expected
 
     def test_roundtrip_vp9(self):
         frame = b"\xFF" * 100
@@ -301,7 +312,9 @@ class TestFrameDecryptor:
         ratchet = make_ratchet(secret)
         enc = FrameEncryptor(sender_user_id=1, ratchet=ratchet)
         frame = b"\xAA" * 20
-        protocol_frame = enc.encrypt(frame, "OPUS")
+        protocol_frame = b""
+        for _ in range(200):
+            protocol_frame = enc.encrypt(frame, "OPUS")
         dec_ratchet = make_ratchet(secret)
         dec = FrameDecryptor(sender_user_id=1, ratchet=dec_ratchet, passthrough=True)
         result = dec.decrypt(protocol_frame)
@@ -386,7 +399,7 @@ class TestFrameDecryptorNonceWrap:
 # ---------------------------------------------------------------------------
 
 class TestProtocolFrameCheck:
-    def _make_valid_frame(self, nonce: int = 0,
+    def _make_valid_frame(self, nonce: int = 128,
                            ranges: list[UnencryptedRange] | None = None) -> bytes:
         if ranges is None:
             ranges = []
@@ -415,6 +428,19 @@ class TestProtocolFrameCheck:
         body = b"\xAA" * 8 + uleb128_encode(0)
         frame = b"\x00" * 20 + body + bytes([5]) + DAVE_MAGIC
         assert protocol_frame_check(frame) is False
+
+    def test_suppl_size_equal_minimum_accepted(self):
+        body = b"\xAA" * 8 + uleb128_encode(0)
+        frame = b"\x00" * 20 + body + bytes([MIN_SUPPLEMENTAL]) + DAVE_MAGIC
+        assert protocol_frame_check(frame) is True
+
+    def test_suppl_size_minimum_policy_allows_exact_min(self):
+        """
+        Current implementation policy: supplemental_size == MIN_SUPPLEMENTAL is valid.
+        """
+        body = b"\xAB" * 8 + uleb128_encode(1)
+        frame = b"\x00" * 3 + body + bytes([MIN_SUPPLEMENTAL]) + DAVE_MAGIC
+        assert protocol_frame_check(frame) is True
 
     def test_suppl_size_too_large(self):
         body = b"\xAA" * 8 + uleb128_encode(0)
@@ -446,6 +472,30 @@ class TestProtocolFrameCheck:
         frame = b"\x00" * 5 + body + bytes([suppl_size]) + DAVE_MAGIC
         assert protocol_frame_check(frame) is False
 
+    def test_unsorted_non_overlapping_ranges_rejected(self):
+        # Ranges are non-overlapping but not in ascending offset order.
+        tag = b"\xAA" * 8
+        body = tag + uleb128_encode(0)
+        body += uleb128_encode(10) + uleb128_encode(2)
+        body += uleb128_encode(3) + uleb128_encode(2)
+        suppl_size = len(body) + 3
+        frame = b"\x00" * 20 + body + bytes([suppl_size]) + DAVE_MAGIC
+        assert protocol_frame_check(frame) is False
+
+    def test_truncated_uleb_nonce_rejected(self):
+        # 0x80 indicates continuation; missing final byte should fail ULEB decode.
+        body = b"\xAA" * 8 + b"\x80"
+        suppl_size = len(body) + 3
+        frame = b"\x00" * 10 + body + bytes([suppl_size]) + DAVE_MAGIC
+        assert protocol_frame_check(frame) is False
+
+    def test_truncated_range_pair_rejected(self):
+        tag = b"\xAA" * 8
+        body = tag + uleb128_encode(0) + uleb128_encode(4)
+        suppl_size = len(body) + 3
+        frame = b"\x00" * 12 + body + bytes([suppl_size]) + DAVE_MAGIC
+        assert protocol_frame_check(frame) is False
+
     def test_non_protocol_frame(self):
         assert protocol_frame_check(b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C") is False
 
@@ -455,7 +505,7 @@ class TestProtocolFrameCheck:
 
 class TestSilencePacket:
     def test_value(self):
-        assert SILENCE_PACKET == bytes((0xF8, 0xFF, 0xFE))
+        assert bytes((0xF8, 0xFF, 0xFE)) == SILENCE_PACKET
 
     def test_length(self):
         assert len(SILENCE_PACKET) == 3

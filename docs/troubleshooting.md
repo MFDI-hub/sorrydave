@@ -4,6 +4,23 @@ This page covers common errors, how to recover, and practical debug tips when in
 
 ---
 
+## Opcode 28 sent but no opcode 29 / 30
+
+**When it happens:** You send a commit/welcome (opcode 28) and the gateway never broadcasts opcode 29 (announce commit) or opcode 30 (welcome). There is no error opcode. After a timeout, `transition_id` is still `None`.
+
+**Cause:** The gateway dropped the commit. Invalid commits are not broadcast. The usual reason is an MLS **group ID** that is not the voice channel snowflake:
+
+```python
+session = DaveSession(local_user_id=user_id, channel_id=channel_id)
+# group_id == channel_id.to_bytes(8, "big")
+```
+
+Do not use the placeholder `b"dave-default-group"`. A second cause is a commit that does not reference every Add/Remove the gateway broadcast in the epoch (for example, skipping an Add for the local user because opcode 11 only listed other members).
+
+**Recovery:** Start a **new** voice session (new identify + new key package). Opcode 7 resume does not replay opcodes 25–30, so the handshake cannot be recovered on the same socket.
+
+---
+
 ## Common errors and recovery
 
 ### InvalidCommitError

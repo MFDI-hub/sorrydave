@@ -1,9 +1,9 @@
 """End-to-end integration tests: full encrypt/decrypt pipeline, multi-codec, epoch transitions."""
 
 import pytest
-
 from sorrydave.crypto.ratchet import KeyRatchet
 from sorrydave.exceptions import DecryptionError
+from sorrydave.media.codecs import transform_h26x_frame_for_encrypt
 from sorrydave.media.transform import (
     SILENCE_PACKET,
     FrameDecryptor,
@@ -39,7 +39,13 @@ class TestFullPipelineAllCodecs:
         assert protocol_frame_check(protocol_frame)
         if codec != "AV1":
             result = dec.decrypt(protocol_frame)
-            assert result == frame
+            expected = frame
+            codec_upper = codec.upper()
+            if codec_upper in ("H264", "H.264"):
+                expected, _ = transform_h26x_frame_for_encrypt(frame, h265=False)
+            elif codec_upper in ("H265", "HEVC", "H265/HEVC"):
+                expected, _ = transform_h26x_frame_for_encrypt(frame, h265=True)
+            assert result == expected
         else:
             dec.decrypt(protocol_frame)
 
@@ -116,7 +122,7 @@ class TestSilenceAndPassthrough:
         assert dec.decrypt(SILENCE_PACKET) == SILENCE_PACKET
 
     def test_passthrough_mode_non_protocol(self):
-        enc_r = KeyRatchet(b"\x01" * 16)
+        KeyRatchet(b"\x01" * 16)
         dec_r = KeyRatchet(b"\x01" * 16)
         dec = FrameDecryptor(sender_user_id=1, ratchet=dec_r, passthrough=True)
         non_proto = b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E"

@@ -6,7 +6,6 @@ import os
 import tempfile
 
 import pytest
-
 from sorrydave.persistent_keys import (
     DISCORD_SELF_SIGNATURE_LABEL,
     VoicePublicKeysPayload,
@@ -107,9 +106,9 @@ class TestSignDiscordSelfSignature:
         pub_key.verify(sig, signable, ec.ECDSA(hashes.SHA256()))
 
     def test_signature_fails_with_wrong_data(self):
+        from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import ec
-        from cryptography.exceptions import InvalidSignature
 
         pub, priv = generate_p256_keypair()
         signable = build_discord_self_signature_signable_data("sess", pub)
@@ -131,8 +130,8 @@ class TestSignDiscordSelfSignature:
         assert sig1 != sig2
 
     def test_non_ec_key_raises(self):
-        from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
 
         rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         rsa_der = rsa_key.private_bytes(

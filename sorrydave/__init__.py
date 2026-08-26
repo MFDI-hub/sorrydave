@@ -5,6 +5,15 @@ Pure data-transformation and state-management layer on top of rfc9420 (PyMLS).
 No I/O or networking; consume/produce bytes for media and MLS payloads.
 """
 
+from rfc9420 import (
+    DefaultCryptoProvider,
+    SenderType,
+    TLSDecodeError,
+)
+from rfc9420 import (
+    MLSGroup as Group,
+)
+
 from sorrydave.exceptions import DaveProtocolError, DecryptionError, InvalidCommitError
 from sorrydave.identity import displayable_code, generate_fingerprint
 from sorrydave.media.transform import FrameDecryptor, FrameEncryptor
@@ -15,7 +24,7 @@ from sorrydave.persistent_keys import (
     load_persistent_signature_key,
     save_persistent_signature_key,
 )
-from sorrydave.session import DaveSession, SharedIdentityContext
+from sorrydave.session import DaveSession, SharedIdentityContext, mls_group_id_from_channel_id
 from sorrydave.types import (
     DaveConfiguration,
     IdentityConfig,
@@ -23,7 +32,6 @@ from sorrydave.types import (
     UnencryptedRange,
 )
 from sorrydave.verification import VerificationStore, VerifiedIdentity
-from sorrydave._rfc9420 import DefaultCryptoProvider, Group, SenderType, TLSDecodeError
 
 __all__ = [
     "DaveProtocolError",
@@ -39,6 +47,7 @@ __all__ = [
     "IdentityConfig",
     "DaveSession",
     "SharedIdentityContext",
+    "mls_group_id_from_channel_id",
     "FrameEncryptor",
     "FrameDecryptor",
     "generate_fingerprint",
@@ -52,4 +61,4 @@ __all__ = [
     "VerificationStore",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.10.5"

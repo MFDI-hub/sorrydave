@@ -19,7 +19,7 @@ Requires Python 3.9+, `rfc9420`, `cryptography`, and `pycryptodome`.
 
 ## Minimal lifecycle
 
-1. Create a session: `DaveSession(local_user_id=123456789)`.
+1. Create a session: `DaveSession(local_user_id=123456789, channel_id=voice_channel_id)`. The MLS group ID is the channel snowflake as 8 big-endian bytes; Discord will silently drop commits that use any other group ID.
 2. On **select_protocol_ack** (or **prepare_epoch** with `epoch=1`), call `session.prepare_epoch(1)` and send the returned bytes as opcode 26 (Key Package).
 3. On **opcode 25** (External Sender Package), call `session.handle_external_sender_package(package_bytes)`.
 4. On **opcode 27** (Proposals), call `session.handle_proposals(proposal_bytes)`; if it returns bytes, send them as opcode 28.

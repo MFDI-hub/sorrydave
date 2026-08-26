@@ -1,7 +1,6 @@
 """Comprehensive group_state tests: key packages, group creation, exports, extensions, validation."""
 
 import pytest
-
 from sorrydave.exceptions import InvalidCommitError
 from sorrydave.mls.group_state import (
     DAVE_MLS_CIPHERSUITE_ID,
@@ -21,7 +20,6 @@ from sorrydave.mls.group_state import (
     create_update_proposal,
     export_sender_base_secret,
     get_dave_crypto_provider,
-    get_external_senders_from_group,
     join_from_welcome,
     serialize_external_senders_extension,
     validate_group_external_sender,
@@ -40,7 +38,7 @@ def key_package_tuple(crypto):
 
 @pytest.fixture
 def group_with_ext(crypto, key_package_tuple):
-    kp_bytes, _, _ = key_package_tuple
+    kp_bytes, *_ = key_package_tuple
     return create_group(
         b"test-group",
         kp_bytes,
@@ -59,66 +57,115 @@ class TestGetDaveCryptoProvider:
     def test_idempotent(self):
         c1 = get_dave_crypto_provider()
         c2 = get_dave_crypto_provider()
-        assert type(c1) == type(c2)
+        assert type(c1) is type(c2)
 
 
 class TestCreateKeyPackage:
-    def test_returns_tuple_of_three(self, crypto):
-        kp_bytes, hpke_private, signing_der = create_key_package(1, crypto)
+    def test_returns_tuple_of_four(self, crypto):
+        kp_bytes, hpke_private, signing_der, enc_private = create_key_package(1, crypto)
         assert isinstance(kp_bytes, bytes)
         assert isinstance(hpke_private, bytes)
         assert isinstance(signing_der, bytes)
+        assert isinstance(enc_private, bytes)
         assert len(kp_bytes) > 0
         assert len(hpke_private) > 0
         assert len(signing_der) > 0
+        assert len(enc_private) > 0
+        assert hpke_private != enc_private
+
+    def test_verifies_with_rfc9420(self, crypto):
+        from rfc9420.messages.key_packages import KeyPackage
+
+        kp_bytes, *_ = create_key_package(1, crypto)
+        KeyPackage.deserialize(kp_bytes).verify(crypto)
 
     def test_different_users_different_kps(self, crypto):
-        kp1, _, _ = create_key_package(1, crypto)
-        kp2, _, _ = create_key_package(2, crypto)
+        kp1, *_ = create_key_package(1, crypto)
+        kp2, *_ = create_key_package(2, crypto)
         assert kp1 != kp2
 
     def test_default_crypto(self):
-        kp, hpke, sig = create_key_package(42)
+        kp, *_ = create_key_package(42)
         assert len(kp) > 0
 
     def test_large_user_id(self, crypto):
-        kp, _, _ = create_key_package((1 << 63) - 1, crypto)
+        kp, *_ = create_key_package((1 << 63) - 1, crypto)
         assert len(kp) > 0
 
 
 class TestCreateGroup:
     def test_single_member(self, crypto, key_package_tuple):
-        kp_bytes, _, _ = key_package_tuple
+        kp_bytes, *_ = key_package_tuple
         group = create_group(b"test-group", kp_bytes, crypto)
         assert group is not None
-        assert group._inner.get_member_count() == 1
+        assert group.member_count == 1
 
     def test_with_external_sender(self, group_with_ext):
         assert group_with_ext is not None
-        assert group_with_ext._inner.get_member_count() == 1
+        assert group_with_ext.member_count == 1
 
     def test_default_crypto(self, key_package_tuple):
-        kp_bytes, _, _ = key_package_tuple
+        kp_bytes, *_ = key_package_tuple
         group = create_group(b"default-crypto-group", kp_bytes)
         assert group is not None
 
 
+class TestValidateGroupExternalSender:
+    def test_missing_external_sender_raises(self, crypto, key_package_tuple):
+        kp_bytes, *_ = key_package_tuple
+        group = create_group(b"no-ext-sender-group", kp_bytes, crypto)
+        with pytest.raises(InvalidCommitError, match="exactly one external sender"):
+            validate_group_external_sender(
+                group,
+                expected_signature_key=b"\xaa" * 32,
+                expected_credential_type=1,
+                expected_identity=b"\x00" * 8,
+            )
+
+    def test_matching_external_sender(self, group_with_ext):
+        validate_group_external_sender(
+            group_with_ext,
+            expected_signature_key=b"\xaa" * 65,
+            expected_credential_type=1,
+            expected_identity=b"\x00" * 8,
+        )
+
+
 class TestExportSenderBaseSecret:
     def test_returns_16_bytes(self, crypto, key_package_tuple):
-        kp_bytes, _, _ = key_package_tuple
+        kp_bytes, *_ = key_package_tuple
         group = create_group(b"test-export", kp_bytes, crypto)
         secret = export_sender_base_secret(group, 123456789)
         assert len(secret) == EXPORTER_LENGTH
 
+    def test_hashes_exporter_context_per_rfc9420(self, crypto, key_package_tuple):
+        kp_bytes, *_ = key_package_tuple
+        group = create_group(b"test-export-context", kp_bytes, crypto)
+        user_id = 123456789
+        context = user_id.to_bytes(8, "little")
+        exporter_secret = group._group._inner.get_exporter_secret()
+        derived = crypto.derive_secret(exporter_secret, EXPORTER_LABEL)
+        expected = crypto.expand_with_label(
+            derived, b"exported", crypto.hash(context), EXPORTER_LENGTH
+        )
+        raw_context_result = crypto.expand_with_label(
+            derived, b"exported", context, EXPORTER_LENGTH
+        )
+
+        secret = export_sender_base_secret(group, user_id)
+
+        assert secret == expected
+        assert secret != raw_context_result
+
     def test_different_user_ids_different_secrets(self, crypto, key_package_tuple):
-        kp_bytes, _, _ = key_package_tuple
+        kp_bytes, *_ = key_package_tuple
         group = create_group(b"test-export-2", kp_bytes, crypto)
         s1 = export_sender_base_secret(group, 1)
         s2 = export_sender_base_secret(group, 2)
         assert s1 != s2
 
     def test_deterministic(self, crypto, key_package_tuple):
-        kp_bytes, _, _ = key_package_tuple
+        kp_bytes, *_ = key_package_tuple
         group = create_group(b"test-det", kp_bytes, crypto)
         s1 = export_sender_base_secret(group, 42)
         s2 = export_sender_base_secret(group, 42)
@@ -127,7 +174,7 @@ class TestExportSenderBaseSecret:
 
 class TestApplyCommit:
     def test_invalid_commit_raises(self, crypto, key_package_tuple):
-        kp_bytes, _, _ = key_package_tuple
+        kp_bytes, *_ = key_package_tuple
         group = create_group(b"test-apply", kp_bytes, crypto)
         with pytest.raises(InvalidCommitError):
             apply_commit(group, b"\x00\x01\x02", 0)
@@ -135,7 +182,7 @@ class TestApplyCommit:
 
 class TestJoinFromWelcome:
     def test_invalid_welcome_raises(self, crypto):
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             join_from_welcome(b"\x00\x01\x02", b"\x00" * 32, crypto)
 
 
@@ -203,9 +250,9 @@ class TestCheckNoDuplicateCredentials:
 class TestCreateCommitAndWelcome:
     def test_basic_commit_after_update(self, crypto):
         """Create a commit after an update proposal (avoids cross-user kp signature issues)."""
-        kp_bytes, _, signing_der = create_key_package(1, crypto)
+        kp_bytes, _, signing_der, _ = create_key_package(1, crypto)
         group = create_group(b"commit-group", kp_bytes, crypto)
-        update_bytes = create_update_proposal(group, signing_der, 1, crypto)
+        create_update_proposal(group, signing_der, 1, crypto)
         commit_bytes, welcomes = create_commit_and_welcome(group, signing_der)
         assert isinstance(commit_bytes, bytes)
         assert len(commit_bytes) > 0
@@ -214,7 +261,7 @@ class TestCreateCommitAndWelcome:
 
 class TestCreateRemoveProposalForSelf:
     def test_returns_bytes(self, crypto):
-        kp_bytes, _, signing_der = create_key_package(1, crypto)
+        kp_bytes, _, signing_der, _ = create_key_package(1, crypto)
         group = create_group(b"remove-group", kp_bytes, crypto)
         result = create_remove_proposal_for_self(group, signing_der)
         assert isinstance(result, bytes)
@@ -223,7 +270,7 @@ class TestCreateRemoveProposalForSelf:
 
 class TestCreateUpdateProposal:
     def test_returns_bytes(self, crypto):
-        kp_bytes, _, signing_der = create_key_package(1, crypto)
+        kp_bytes, _, signing_der, _ = create_key_package(1, crypto)
         group = create_group(b"update-group", kp_bytes, crypto)
         result = create_update_proposal(group, signing_der, 1, crypto)
         assert isinstance(result, bytes)
@@ -241,4 +288,4 @@ class TestProtocolConstants:
         assert EXPORTER_LENGTH == 16
 
     def test_extension_type(self):
-        assert EXTENSION_TYPE_EXTERNAL_SENDERS == 0x0002
+        assert EXTENSION_TYPE_EXTERNAL_SENDERS == 0x0005

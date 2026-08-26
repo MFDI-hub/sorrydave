@@ -13,13 +13,13 @@ This page walks through a minimal DAVE media session lifecycle: create a session
 
 ## 1. Create a session
 
-Create a `DaveSession` with your local user ID (e.g. Discord snowflake). The session holds MLS group state and per-sender ratchets; it does not perform any I/O.
+Create a `DaveSession` with your local user ID and the voice channel ID (both Discord snowflakes). The channel ID is the MLS group ID (`channel_id.to_bytes(8, "big")`). The session holds MLS group state and per-sender ratchets; it does not perform any I/O.
 
 ```python
 from sorrydave import DaveSession
 
-session = DaveSession(local_user_id=123456789)
-# Optional: session = DaveSession(local_user_id=123456789, protocol_version=1)
+session = DaveSession(local_user_id=123456789, channel_id=987654321)
+# Optional: session = DaveSession(local_user_id=123456789, protocol_version=1, channel_id=987654321)
 ```
 
 ---
@@ -165,13 +165,10 @@ If `get_decryptor(sender_id)` raises **KeyError**, there is no receive ratchet f
 
 ## Leaving the group
 
-To tear down local MLS state and optionally send a Remove proposal for yourself:
+To tear down local MLS state (opcode 27 is gateway-to-client only; do not send a Remove):
 
 ```python
-remove_proposal_bytes = session.leave_group()
-if remove_proposal_bytes is not None:
-    # Send remove_proposal_bytes as part of opcode 27 (proposals)
-    send_proposals_append(remove_proposal_bytes)
+session.leave_group()
 ```
 
 After `leave_group()`, the session has no group; you must go through prepare_epoch(1) and the opcode flow again to rejoin.
@@ -200,7 +197,7 @@ def send_opcode_28(payload: bytes) -> None:
     pass  # Your implementation
 
 # 1. Create session
-session = DaveSession(local_user_id=123456789)
+session = DaveSession(local_user_id=123456789, channel_id=987654321)
 
 # 2. Prepare epoch 1 and send key package
 key_package = session.prepare_epoch(1)

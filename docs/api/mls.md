@@ -67,9 +67,9 @@ Defined in `sorrydave.mls.opcodes`:
 ### Opcode 28: Commit / Welcome
 
 - **Build**: `build_commit_welcome(commit_message: bytes, welcome_message: bytes | None) -> bytes`
-  - **commit_message**: Serialized MLS commit (MLS Plaintext).
-  - **welcome_message**: Optional serialized Welcome (not wrapped in MLSMessage per DAVE).
-  - **Returns**: 1-byte opcode (28) + varint-length-prefixed commit + optional welcome bytes. This is the payload to send as opcode 28.
+  - **commit_message**: Serialized commit PublicMessage (or MLSMessage). Wrapped as `MLSMessage` per protocol.md.
+  - **welcome_message**: Optional serialized Welcome (not wrapped in MLSMessage) when the commit adds members.
+  - **Returns**: `opcode (28) || MLSMessage(commit) || optional Welcome`.
 
 ---
 
@@ -240,7 +240,7 @@ These functions are used internally by `DaveSession` but can be used for custom 
 | `apply_commit` | `handle_commit` to apply an announced commit to the group. |
 | `process_proposal` | `handle_proposals` to apply each proposal before creating a commit. |
 | `create_commit_and_welcome` | `handle_proposals` to build the opcode 28 payload. |
-| `create_remove_proposal_for_self` | `leave_group` to build the Remove proposal for the local member. |
+| `create_remove_proposal_for_self` | Optional custom MLS flows. Not used by `leave_group`; opcode 27 is gateway-to-client only. |
 | `create_update_proposal` | Optional; to refresh the local member’s leaf (not called by default session flow). |
 | `validate_group_external_sender` | Validating the external sender against the group. |
 | `get_external_senders_from_group` | Reading external sender data from the group. |
@@ -321,7 +321,7 @@ Creates commit and optional welcome messages. Returns `(serialized_commit_plaint
 create_remove_proposal_for_self(group: Group, signing_key_der: bytes) -> bytes
 ```
 
-Returns serialized MLS Plaintext Remove proposal for the local member (self-remove). Send via opcode 27.
+Returns serialized MLS Plaintext Remove proposal for the local member (self-remove). Optional helper for custom MLS flows. DAVE clients must not send this as opcode 27 (gateway-to-client only).
 
 ---
 
@@ -331,7 +331,7 @@ Returns serialized MLS Plaintext Remove proposal for the local member (self-remo
 create_update_proposal(group: Group, signing_key_der: bytes, user_id: int, crypto: DefaultCryptoProvider | None = None) -> bytes
 ```
 
-Returns serialized MLS Plaintext Update proposal to refresh the local member’s leaf keys. Send via opcode 27. **Raises** `ValueError` if ciphersuite unknown.
+Returns serialized MLS Plaintext Update proposal to refresh the local member’s leaf keys. Optional helper for custom MLS flows. **Raises** `ValueError` if ciphersuite unknown.
 
 ---
 

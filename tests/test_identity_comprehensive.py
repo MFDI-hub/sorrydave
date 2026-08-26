@@ -1,7 +1,6 @@
 """Comprehensive identity tests: displayable_code, fingerprint, epoch authenticator."""
 
 import pytest
-
 from sorrydave.identity import (
     EPOCH_AUTH_DIGITS,
     EPOCH_AUTH_GROUP_SIZE,
@@ -127,7 +126,7 @@ class TestProtocolConstants:
         assert len(FINGERPRINT_SALT) == 16
 
     def test_version(self):
-        assert FINGERPRINT_VERSION == bytes((0x00, 0x00))
+        assert bytes((0x00, 0x00)) == FINGERPRINT_VERSION
 
     def test_scrypt_params(self):
         assert SCRYPT_N == 16384

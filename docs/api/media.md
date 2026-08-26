@@ -59,7 +59,7 @@ encrypt(encoded_frame: bytes, codec: str) -> bytes
 **Behavior**
 
 - Unencrypted ranges are computed by `get_unencrypted_ranges(frame, codec)` (see [Codec details](#codec-details)).
-- For H264/H265, 3-byte start codes in unencrypted sections are expanded to 4-byte; encryption is retried up to 10 times if a start code appears in ciphertext or footer.
+- For H264/H265, Annex B start codes are rewritten to 4-byte `00 00 00 01` (unencrypted) using davey/libdave NAL ranges; encryption is retried up to 10 times if a start code appears in ciphertext or footer.
 - Generation is `(nonce >> 24) & 0xFF`; key is `ratchet.get_key_for_generation(generation)`.
 - AAD for GCM is the concatenation of unencrypted range bytes; ciphertext is the concatenation of encrypted-range bytes, then interleaved back with plaintext ranges.
 
@@ -104,8 +104,8 @@ Behavior of `get_unencrypted_ranges(frame, codec)` per codec:
 |-------|------------------|-------------------|
 | **OPUS**, **VP9** | None | Entire frame encrypted. No headers left plaintext. |
 | **VP8** | First 1 or 10 bytes | **Delta frame** (P bit = 1 in first byte): 1 byte (frame header). **Key frame** (P bit = 0): 10 bytes (frame header). LSB of first byte is the P bit. |
-| **H264** | 1-byte NAL header per non-VCL NAL | **VCL NALs** (types 1–5): encrypted. **Non-VCL NALs** (e.g. SPS, PPS, SEI): only the 1-byte NAL type header at each NAL start is plaintext. Annex B start codes (`0x000001` / `0x00000001`); 3-byte in plaintext sections expanded to 4-byte by encryptor. |
-| **H265/HEVC** | 2-byte NAL header per non-VCL NAL | **VCL NALs**: encrypted. **Non-VCL NALs** (type ≥ 32): 2-byte NAL header at each NAL start is plaintext. Annex B start codes; same 3→4 byte expansion. |
+| **H264** | 4-byte start codes; VCL header+PPS ID; full non-VCL NALs | **Slice/IDR** (types **1**, **5**): 4-byte start code, 1-byte NAL header, and exp-golomb bytes through PPS ID stay plaintext. **Other NAL types**: entire NAL unencrypted. Start codes are always rewritten to 4-byte `00 00 00 01`. |
+| **H265/HEVC** | 4-byte start codes; 2-byte VCL header; full non-VCL NALs | **VCL** (type < 32): 4-byte start code + 2-byte NAL header plaintext. **Non-VCL**: entire NAL unencrypted. Same 4-byte start-code rewrite. |
 | **AV1** | OBU header + optional extension + optional size | Per **OBU**: 1-byte header; optional extension byte; optional LEB128 size. **Payload** of the OBU is encrypted. OBU types **2** (temporal delimiter), **8** (tile list), **15** (padding) are skipped (no payload). |
 | **Unknown** | None | Empty list; full frame is encrypted. |
 

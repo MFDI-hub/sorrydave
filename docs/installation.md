@@ -76,7 +76,7 @@ print(sorrydave.__version__)
 # 0.1.0
 
 from sorrydave import DaveSession
-session = DaveSession(local_user_id=123456789)
+session = DaveSession(local_user_id=123456789, channel_id=987654321)
 ```
 
 ---
