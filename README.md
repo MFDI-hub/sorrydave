@@ -1,6 +1,6 @@
 # sorrydave
 
-Production-quality Python library for the **DAVE** (Discord Audio/Video End-to-End Encryption) protocol. It implements the protocol as a **pure data-transformation and state-management layer** on top of [rfc9420](https://pypi.org/project/rfc9420/) (PyMLS), with **no I/O or networking**: you pass in bytes (Voice Gateway opcodes, encoded media frames) and get back bytes (opcode payloads, encrypted/decrypted frames).
+Should be production-quality Python library for the **DAVE** (Discord Audio/Video End-to-End Encryption) protocol. Currently it passes the tests i made but i have problem using it. I mean the library it uses(rfc9420) passes official vectors. It implements the protocol as a **pure data-transformation and state-management layer** on top of [rfc9420](https://pypi.org/project/rfc9420/) (PyMLS), with **no I/O or networking**: you pass in bytes (Voice Gateway opcodes, encoded media frames) and get back bytes (opcode payloads, encrypted/decrypted frames).
 
 ## Features
 
