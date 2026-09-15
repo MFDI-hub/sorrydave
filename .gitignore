@@ -216,9 +216,6 @@ voice_payloads/
 site/
 
 # Local scratch, protocol captures, and tool dumps
-*.txt
-idk
 docs_rfc9420/
 src_api.md
-sorrydave_not_fixed/
 discordy/
