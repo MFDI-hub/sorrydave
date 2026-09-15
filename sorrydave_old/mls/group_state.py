@@ -26,7 +26,7 @@ from __future__ import annotations
 import contextlib
 import threading
 from collections.abc import Iterator
-from typing import Any, Union, cast
+from typing import Any, Union
 
 from rfc9420 import DefaultCryptoProvider, MLSGroup, SenderType
 from rfc9420.api.session import MLSGroupSession
@@ -86,105 +86,6 @@ def _rfc9420_dave_commit_interop() -> Iterator[None]:
         patch.object(mls_extensions, "random_grease_values", lambda *_a, **_k: []),
     ):
         yield
-
-
-def _stored_leaf_parent_hash(tree: Any, leaf_index: int, compute: Any) -> bytes:
-    """Return the leaf's stored parent_hash so rfc9420's extra Welcome check is a no-op."""
-    node = tree.get_node(int(leaf_index) * 2)
-    leaf = getattr(node, "leaf_node", None)
-    stored = getattr(leaf, "parent_hash", None) or b""
-    if stored:
-        return bytes(stored)
-    return compute(tree, leaf_index)
-
-
-def _bind_welcome_stored_leaf_parent_hash(tree: Any, compute: Any) -> Any:
-    """Bind a stored-hash lookup on this tree instance (beats subclass MRO)."""
-
-    def _stored(leaf_index: int, _tree: Any = tree, _compute: Any = compute) -> bytes:
-        return _stored_leaf_parent_hash(_tree, leaf_index, _compute)
-
-    tree._compute_parent_hash_for_leaf = _stored
-    return tree
-
-
-def _install_rfc9420_welcome_parent_hash_fix() -> None:
-    """Interop for Discord occupied-join Welcomes (RFC 9420 §7.9 / §12.4.3.1).
-
-    rfc9420's Welcome path recomputes every leaf ``parent_hash`` and rejects
-    Discord/libdave trees after several add/remove epochs (unmerged leaves make
-    ``original_sibling_tree_hash`` disagree). Join authentication is already
-    covered by the signed GroupInfo, matching tree hash, and §7.9.2 parent-hash
-    chains. Skip only that extra leaf equality check during ``from_welcome``.
-    """
-    from rfc9420.group.mls_group import processing as mls_processing
-    from rfc9420.group.mls_group.processing import MLSGroup as ProtocolMLSGroup
-    from rfc9420.protocol.tree import tree_math
-    from rfc9420.protocol.tree.ratchet_tree import RatchetTree
-
-    current = getattr(RatchetTree, "_compute_parent_hash_for_leaf", None)
-    if current is None or not getattr(current, "_sorrydave_one_hop", False):
-        def _compute_parent_hash_for_leaf(self: Any, leaf_index: int) -> bytes:
-            if self.n_leaves == 0:
-                return b""
-            leaf_node_index = int(leaf_index) * 2
-            root_idx = tree_math.root(self.n_leaves)
-            if leaf_node_index == root_idx:
-                return b""
-            p_idx = leaf_node_index
-            found = False
-            while p_idx != root_idx:
-                p_idx = tree_math.parent(p_idx, self.n_leaves)
-                if self.get_node(p_idx).public_key:
-                    found = True
-                    break
-            if not found or not self.get_node(p_idx).public_key:
-                return b""
-            l_child = tree_math.left(p_idx)
-            r_child = tree_math.right(p_idx, self.n_leaves)
-            if leaf_node_index == l_child or self._is_leaf_descendant_of(
-                int(leaf_index), l_child
-            ):
-                s_idx = r_child
-            else:
-                s_idx = l_child
-            result: bytes = self._compute_parent_hash_of_parent_node(p_idx, s_idx)
-            return result
-
-        cast(Any, _compute_parent_hash_for_leaf)._sorrydave_one_hop = True
-        RatchetTree._compute_parent_hash_for_leaf = _compute_parent_hash_for_leaf
-
-    orig_from_welcome = ProtocolMLSGroup.from_welcome
-    orig_from_welcome_fn = getattr(orig_from_welcome, "__func__", orig_from_welcome)
-    if getattr(orig_from_welcome_fn, "_sorrydave_skip_leaf_ph", False):
-        return
-
-    orig_create_tree = mls_processing.create_tree_backend
-
-    def from_welcome(cls: Any, *args: Any, **kwargs: Any) -> Any:
-        compute = RatchetTree._compute_parent_hash_for_leaf
-
-        def _stored_on_class(self: Any, leaf_index: int) -> bytes:
-            return _stored_leaf_parent_hash(self, leaf_index, compute)
-
-        def create_tree(*tree_args: Any, **tree_kwargs: Any) -> Any:
-            return _bind_welcome_stored_leaf_parent_hash(
-                orig_create_tree(*tree_args, **tree_kwargs), compute
-            )
-
-        RatchetTree._compute_parent_hash_for_leaf = _stored_on_class
-        cast(Any, mls_processing).create_tree_backend = create_tree
-        try:
-            return orig_from_welcome_fn(cls, *args, **kwargs)
-        finally:
-            RatchetTree._compute_parent_hash_for_leaf = compute
-            mls_processing.create_tree_backend = orig_create_tree
-
-    cast(Any, from_welcome)._sorrydave_skip_leaf_ph = True
-    cast(Any, ProtocolMLSGroup).from_welcome = classmethod(from_welcome)
-
-
-_install_rfc9420_welcome_parent_hash_fix()
 
 
 def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
@@ -617,12 +518,6 @@ def join_from_welcome(
 
     if crypto is None:
         crypto = get_dave_crypto_provider()
-    _install_rfc9420_welcome_parent_hash_fix()
-    _welcome_fn = getattr(
-        ProtocolMLSGroup.from_welcome, "__func__", ProtocolMLSGroup.from_welcome
-    )
-    if not getattr(_welcome_fn, "_sorrydave_skip_leaf_ph", False):
-        raise InvalidCommitError("rfc9420 Welcome parent_hash skip was not installed")
     storage = MemoryStorageProvider()
     config = GroupConfig(crypto_provider=crypto, storage_provider=storage)
     welcome = Welcome.deserialize(welcome_bytes)

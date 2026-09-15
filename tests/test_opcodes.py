@@ -1,8 +1,8 @@
 """Tests for DAVE Voice Gateway opcode parsing and building (opcodes 22, 25-31)."""
 
-import json
 import struct
 
+import orjson
 import pytest
 from sorrydave.mls.opcodes import (
     OPCODE_COMMIT_WELCOME,
@@ -88,12 +88,12 @@ def test_parse_execute_transition_transition_id_out_of_range():
 def test_build_invalid_commit_welcome_valid():
     """build_invalid_commit_welcome produces JSON with op 31 and d.transition_id."""
     out = build_invalid_commit_welcome(0)
-    obj = json.loads(out.decode("utf-8"))
+    obj = orjson.loads(out)
     assert obj["op"] == OPCODE_INVALID_COMMIT_WELCOME
     assert obj["d"]["transition_id"] == 0
 
     out = build_invalid_commit_welcome(32)
-    obj = json.loads(out.decode("utf-8"))
+    obj = orjson.loads(out)
     assert obj["d"]["transition_id"] == 32
 
 

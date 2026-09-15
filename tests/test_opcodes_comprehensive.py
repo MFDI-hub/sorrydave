@@ -396,6 +396,14 @@ class TestBuildInvalidCommitWelcome:
         assert obj["op"] == OPCODE_INVALID_COMMIT_WELCOME
         assert obj["d"]["transition_id"] == 42
 
+    def test_dict_matches_bytes(self):
+        from sorrydave.mls.opcodes import build_invalid_commit_welcome_dict
+
+        tid = 42
+        assert orjson.loads(build_invalid_commit_welcome(tid)) == build_invalid_commit_welcome_dict(
+            tid
+        )
+
     def test_out_of_range(self):
         with pytest.raises(ValueError, match="uint16"):
             build_invalid_commit_welcome(0x10000)
@@ -470,15 +478,25 @@ class TestParseClientsConnect:
     def test_valid(self):
         payload = orjson.dumps({"op": 11, "d": {"user_ids": ["123", "456"]}})
         result = parse_clients_connect(payload)
-        assert result == ["123", "456"]
+        assert result == [123, 456]
 
     def test_empty_list(self):
         payload = orjson.dumps({"op": 11, "d": {"user_ids": []}})
         assert parse_clients_connect(payload) == []
 
-    def test_not_strings(self):
+    def test_integer_ids(self):
         payload = orjson.dumps({"op": 11, "d": {"user_ids": [123]}})
-        with pytest.raises(ValueError, match="strings"):
+        assert parse_clients_connect(payload) == [123]
+
+    def test_dict_payload(self):
+        assert parse_clients_connect({"op": 11, "d": {"user_ids": ["1", 2]}}) == [1, 2]
+
+    def test_d_object_only(self):
+        assert parse_clients_connect({"user_ids": ["9"]}) == [9]
+
+    def test_not_coercible(self):
+        payload = orjson.dumps({"op": 11, "d": {"user_ids": [True]}})
+        with pytest.raises(ValueError, match="integer or digit string"):
             parse_clients_connect(payload)
 
     def test_missing_user_ids(self):
@@ -495,16 +513,23 @@ class TestParseClientsConnect:
 class TestParseClientDisconnect:
     def test_valid(self):
         payload = orjson.dumps({"op": 13, "d": {"user_id": "789"}})
-        assert parse_client_disconnect(payload) == "789"
+        assert parse_client_disconnect(payload) == 789
 
-    def test_not_string(self):
+    def test_integer_id(self):
         payload = orjson.dumps({"op": 13, "d": {"user_id": 789}})
-        with pytest.raises(ValueError, match="string"):
+        assert parse_client_disconnect(payload) == 789
+
+    def test_dict_payload(self):
+        assert parse_client_disconnect({"d": {"user_id": "42"}}) == 42
+
+    def test_not_snowflake(self):
+        payload = orjson.dumps({"op": 13, "d": {"user_id": True}})
+        with pytest.raises(ValueError, match="integer or digit string"):
             parse_client_disconnect(payload)
 
     def test_missing(self):
         payload = orjson.dumps({"op": 13, "d": {}})
-        with pytest.raises(ValueError, match="string"):
+        with pytest.raises(ValueError, match="integer or digit string"):
             parse_client_disconnect(payload)
 
 
@@ -560,6 +585,12 @@ class TestBuildReadyForTransition:
         obj = orjson.loads(result)
         assert obj["op"] == OPCODE_READY_FOR_TRANSITION
         assert obj["d"]["transition_id"] == 10
+
+    def test_dict_matches_bytes(self):
+        from sorrydave.mls.opcodes import build_ready_for_transition_dict
+
+        tid = 10
+        assert orjson.loads(build_ready_for_transition(tid)) == build_ready_for_transition_dict(tid)
 
     def test_out_of_range(self):
         with pytest.raises(ValueError, match="uint16"):
@@ -638,3 +669,54 @@ class TestOpcodeConstants:
         assert OPCODE_ANNOUNCE_COMMIT == 29
         assert OPCODE_WELCOME == 30
         assert OPCODE_INVALID_COMMIT_WELCOME == 31
+
+
+class TestDetectBinaryOpcode:
+    def test_sequence_prefixed(self):
+        from sorrydave.mls.opcodes import detect_binary_opcode
+
+        payload = struct.pack("!HB", 7, 25) + b"\x00"
+        assert detect_binary_opcode(payload) == 25
+
+    def test_opcode_prefixed(self):
+        from sorrydave.mls.opcodes import detect_binary_opcode
+
+        assert detect_binary_opcode(bytes([26]) + b"kp") == 26
+        assert detect_binary_opcode(bytes([28]) + b"cw") == 28
+
+    def test_empty_and_non_dave(self):
+        from sorrydave.mls.opcodes import detect_binary_opcode
+
+        assert detect_binary_opcode(b"") is None
+        assert detect_binary_opcode(b"{") is None
+
+
+class TestReadMlsVarint:
+    def test_one_byte(self):
+        from sorrydave.mls.opcodes import read_mls_varint
+
+        value, consumed = read_mls_varint(b"\x05abc", 0)
+        assert value == 5
+        assert consumed == 1
+
+    def test_two_byte(self):
+        from sorrydave.mls.opcodes import read_mls_varint
+
+        value, consumed = read_mls_varint(bytes([0x40, 0x80]), 0)
+        assert consumed == 2
+        assert value == 0x80
+
+
+class TestJsonParsersAcceptDict:
+    def test_prepare_transition_d_only(self):
+        pv, tid = parse_prepare_transition({"protocol_version": 1, "transition_id": 10})
+        assert (pv, tid) == (1, 10)
+
+    def test_execute_transition_dict(self):
+        assert parse_execute_transition({"op": 22, "d": {"transition_id": 3}}) == 3
+
+    def test_prepare_epoch_dict(self):
+        assert parse_prepare_epoch({"d": {"protocol_version": 1, "epoch": 1}}) == (1, 1)
+
+    def test_select_protocol_ack_protocol_version_fallback(self):
+        assert parse_select_protocol_ack({"protocol_version": 1}) == 1

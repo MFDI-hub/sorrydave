@@ -47,22 +47,6 @@ from sorrydave.types import (
     UnencryptedRange,
 )
 from sorrydave.verification import VerificationStore, VerifiedIdentity
-from sorrydave.voice_gateway import (
-    HandshakeApplyResult,
-    InvalidCommitRecovery,
-    PrepareTransitionResult,
-    ProposalApplyResult,
-    apply_proposals_message,
-    configure_occupied_join,
-    handle_announce_commit_wire,
-    handle_execute_transition_message,
-    handle_external_sender_wire,
-    handle_prepare_transition_message,
-    handle_welcome_wire,
-    recover_invalid_commit,
-    sync_client_disconnect,
-    sync_clients_connect,
-)
 
 __all__ = [
     "DaveProtocolError",
@@ -84,20 +68,6 @@ __all__ = [
     "PREPARE_EXECUTE_NOW",
     "PREPARE_DEFER_UNTIL_MEDIA_READY",
     "PREPARE_WAIT_FOR_EXECUTE",
-    "HandshakeApplyResult",
-    "InvalidCommitRecovery",
-    "PrepareTransitionResult",
-    "ProposalApplyResult",
-    "apply_proposals_message",
-    "configure_occupied_join",
-    "handle_announce_commit_wire",
-    "handle_execute_transition_message",
-    "handle_external_sender_wire",
-    "handle_prepare_transition_message",
-    "handle_welcome_wire",
-    "recover_invalid_commit",
-    "sync_client_disconnect",
-    "sync_clients_connect",
     "FrameEncryptor",
     "FrameDecryptor",
     "protocol_frame_check",

@@ -135,13 +135,13 @@ class TestFullFlowParser:
         lines = _load_full_txt_lines()
         op11_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 11)
         user_ids = parse_clients_connect(op11_line.encode())
-        assert user_ids == ["1136799305555005490"]
+        assert user_ids == [1136799305555005490]
 
     def test_json_op13_client_disconnect(self):
         lines = _load_full_txt_lines()
         op13_line = next(line for line in lines if _is_json_line(line) and orjson.loads(line).get("op") == 13)
         user_id = parse_client_disconnect(op13_line.encode())
-        assert user_id == "1136799305555005490"
+        assert user_id == 1136799305555005490
 
     def test_binary_op25_external_sender_parses(self):
         lines = _load_full_txt_lines()

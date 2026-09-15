@@ -12,7 +12,7 @@ Public parse/build functions:
     - read_mls_varint: RFC 9420 variable-size length header (value, bytes consumed).
     - parse_prepare_transition: Parse opcode 21 (Prepare Transition); returns (protocol_version, transition_id).
     - parse_execute_transition: Parse opcode 22 (Execute Transition); returns transition_id.
-    - build_ready_for_transition_dict / build_ready_for_transition: opcode 23 JSON.
+    - build_ready_for_transition: Build opcode 23 (Ready For Transition) JSON.
     - parse_prepare_epoch: Parse opcode 24 (Prepare Epoch); returns (protocol_version, epoch).
     - parse_external_sender_package: Parse opcode 25 (External Sender Package).
     - build_key_package_message: Build opcode 26 (Key Package) payload.
@@ -20,15 +20,14 @@ Public parse/build functions:
     - build_commit_welcome: Build opcode 28 (Commit/Welcome) payload.
     - parse_announce_commit: Parse opcode 29 (Announce Commit); returns (transition_id, commit_bytes).
     - parse_welcome_message: Parse opcode 30 (Welcome); returns (transition_id, welcome_bytes).
-    - build_invalid_commit_welcome_dict / build_invalid_commit_welcome: opcode 31 JSON.
+    - build_invalid_commit_welcome: Build opcode 31 (Invalid Commit/Welcome) JSON.
 """
 
 import contextlib
+import json
 import struct
 from dataclasses import dataclass
 from typing import Any, Union, cast
-
-import orjson
 
 # Opcode values per protocol.md
 OPCODE_IDENTIFY = 0
@@ -549,11 +548,15 @@ def _coerce_json_object(
     """Decode bytes/str JSON or accept an already-parsed object."""
     if isinstance(payload, dict):
         return payload
-    if not isinstance(payload, (bytes, bytearray, memoryview, str)):
+    if isinstance(payload, str):
+        raw = payload.encode("utf-8")
+    elif isinstance(payload, (bytes, bytearray, memoryview)):
+        raw = bytes(payload)
+    else:
         raise ValueError(invalid_message)
     try:
-        obj = orjson.loads(payload)
-    except orjson.JSONDecodeError as e:
+        obj = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise ValueError(invalid_message) from e
     if not isinstance(obj, dict):
         raise ValueError("Payload must be a JSON object")
@@ -606,7 +609,7 @@ def build_identify(max_dave_protocol_version: int = 1, **d_extra: object) -> byt
     """
     d = {"max_dave_protocol_version": max_dave_protocol_version, **d_extra}
     obj = {"op": OPCODE_IDENTIFY, "d": d}
-    return orjson.dumps(obj)
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
 
 
 def parse_select_protocol_ack(payload: JsonPayload) -> int:
@@ -731,24 +734,6 @@ def parse_execute_transition(payload: JsonPayload) -> int:
     return tid
 
 
-def build_ready_for_transition_dict(transition_id: int) -> dict[str, Any]:
-    """
-    Build opcode 23 (Ready For Transition) as a JSON-serializable dict.
-
-    Args:
-        transition_id (int): Transition ID (uint16) the client is ready to execute.
-
-    Returns:
-        dict[str, Any]: ``{"op":23,"d":{"transition_id": ...}}``.
-
-    Raises:
-        ValueError: If transition_id not in 0..65535.
-    """
-    if not 0 <= transition_id <= 0xFFFF:
-        raise ValueError("transition_id must be uint16")
-    return {"op": OPCODE_READY_FOR_TRANSITION, "d": {"transition_id": int(transition_id)}}
-
-
 def build_ready_for_transition(transition_id: int) -> bytes:
     """
     Build opcode 23 (Ready For Transition) JSON payload. Client sends to server.
@@ -762,7 +747,10 @@ def build_ready_for_transition(transition_id: int) -> bytes:
     Raises:
         ValueError: If transition_id not in 0..65535.
     """
-    return orjson.dumps(build_ready_for_transition_dict(transition_id))
+    if not 0 <= transition_id <= 0xFFFF:
+        raise ValueError("transition_id must be uint16")
+    obj = {"op": OPCODE_READY_FOR_TRANSITION, "d": {"transition_id": transition_id}}
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
 
 
 def parse_prepare_epoch(payload: JsonPayload) -> tuple[int, int]:
@@ -793,27 +781,6 @@ def parse_prepare_epoch(payload: JsonPayload) -> tuple[int, int]:
     return pv, epoch
 
 
-def build_invalid_commit_welcome_dict(transition_id: int) -> dict[str, Any]:
-    """
-    Build opcode 31 (Invalid Commit/Welcome) as a JSON-serializable dict.
-
-    Args:
-        transition_id (int): Transition ID (uint16).
-
-    Returns:
-        dict[str, Any]: ``{"op":31,"d":{"transition_id": ...}}``.
-
-    Raises:
-        ValueError: If transition_id not in uint16 range.
-    """
-    if not 0 <= transition_id <= 0xFFFF:
-        raise ValueError("transition_id must be uint16")
-    return {
-        "op": OPCODE_INVALID_COMMIT_WELCOME,
-        "d": {"transition_id": int(transition_id)},
-    }
-
-
 def build_invalid_commit_welcome(transition_id: int) -> bytes:
     """
     Build opcode 31 (Invalid Commit/Welcome) JSON payload.
@@ -830,4 +797,7 @@ def build_invalid_commit_welcome(transition_id: int) -> bytes:
     Raises:
         ValueError: If transition_id not in uint16 range.
     """
-    return orjson.dumps(build_invalid_commit_welcome_dict(transition_id))
+    if not 0 <= transition_id <= 0xFFFF:
+        raise ValueError("transition_id must be uint16")
+    obj = {"op": OPCODE_INVALID_COMMIT_WELCOME, "d": {"transition_id": transition_id}}
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")

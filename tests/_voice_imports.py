@@ -1,4 +1,4 @@
-"""Load discordy_media.voice modules without importing the full voice package."""
+"""Load discordy.voice modules without importing the full voice package."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import types
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_VOICE_DIR = _REPO_ROOT / "discordy_media" / "voice"
+_VOICE_DIR = _REPO_ROOT / "discordy" / "voice"
 
 
 def _ensure_package(name: str, path: Path) -> types.ModuleType:
@@ -24,11 +24,11 @@ def _ensure_package(name: str, path: Path) -> types.ModuleType:
 
 
 def _install_discordy_stubs() -> None:
-    _ensure_package("discordy_media", _REPO_ROOT / "discordy_media")
-    _ensure_package("discordy_media.voice", _VOICE_DIR)
+    _ensure_package("discordy", _REPO_ROOT / "discordy")
+    _ensure_package("discordy.voice", _VOICE_DIR)
 
-    if "discordy_media.Logger" not in sys.modules:
-        logger_mod = types.ModuleType("discordy_media.Logger")
+    if "discordy.Logger" not in sys.modules:
+        logger_mod = types.ModuleType("discordy.Logger")
 
         class MyLogger:
             @staticmethod
@@ -36,17 +36,17 @@ def _install_discordy_stubs() -> None:
                 return logging.getLogger(name)
 
         logger_mod.MyLogger = MyLogger
-        sys.modules["discordy_media.Logger"] = logger_mod
+        sys.modules["discordy.Logger"] = logger_mod
 
-    if "discordy_media.doh_bypass" not in sys.modules:
-        doh = types.ModuleType("discordy_media.doh_bypass")
+    if "discordy.doh_bypass" not in sys.modules:
+        doh = types.ModuleType("discordy.doh_bypass")
 
         async def connect_ws_with_bypass(*_args, **_kwargs):
             raise RuntimeError("connect_ws_with_bypass is not used in unit tests")
 
         doh.connect_ws_with_bypass = connect_ws_with_bypass
         doh.doh_bypass_from_runtime = lambda *_args, **_kwargs: None
-        sys.modules["discordy_media.doh_bypass"] = doh
+        sys.modules["discordy.doh_bypass"] = doh
 
     if "curl_cffi" not in sys.modules:
         try:
@@ -65,13 +65,15 @@ def _install_discordy_stubs() -> None:
 
             requests_mod.AsyncSession = AsyncSession
             requests_mod.AsyncWebSocket = AsyncWebSocket
+            requests_mod.ProxySpec = dict
+            curl_cffi.requests = requests_mod
             sys.modules["curl_cffi.requests"] = requests_mod
 
 
 def load_voice_module(module_name: str):
-    """Import discordy_media.voice.<module_name> from source without package side effects."""
+    """Import discordy.voice.<module_name> from source without package side effects."""
     _install_discordy_stubs()
-    full_name = f"discordy_media.voice.{module_name}"
+    full_name = f"discordy.voice.{module_name}"
     existing = sys.modules.get(full_name)
     if existing is not None and getattr(existing, "__file__", None):
         return existing

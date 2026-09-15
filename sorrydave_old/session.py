@@ -91,11 +91,7 @@ class DaveSession:
         5. Handle opcode 29: parse_announce_commit then handle_commit(transition_id, commit_bytes).
         6. Handle opcode 30 (if you were added): parse_welcome_message then handle_welcome(transition_id, welcome_bytes).
         7. Handle opcode 22: parse_execute_transition then execute_transition(transition_id).
-        8. Media: encrypt_frame(frame, codec=...) / decrypt_frame(protocol_frame, sender_id).
-
-    Voice Gateway parse-and-apply helpers live in :mod:`sorrydave.voice_gateway`.
-    Those helpers do not send frames, batch proposals, or execute opcode 22
-    while handling opcode 29/30.
+        8. Media: get_encryptor().encrypt(frame, codec=...) and get_decryptor(sender_id).decrypt(protocol_frame).
     """
 
     def __init__(
@@ -233,11 +229,6 @@ class DaveSession:
         except Exception:
             return False
 
-    @property
-    def receive_ratchet_user_ids(self) -> frozenset[int]:
-        """User IDs that currently have a receive ratchet (diagnostics/logging)."""
-        return frozenset(self._receive_ratchets)
-
     def _invalidate_cryptors(self) -> None:
         """Drop cached encryptor/decryptors so the next get_* rebuilds them."""
         self._encryptor = None
@@ -327,27 +318,6 @@ class DaveSession:
     def set_wait_for_welcome(self, enabled: bool) -> None:
         """Wait for opcode 30 instead of committing a local group (occupied join)."""
         self._wait_for_welcome = bool(enabled)
-
-    def configure_occupied_join(
-        self, other_user_ids: Union[Iterable[int | str], None] = None
-    ) -> bool:
-        """
-        Register expected members and wait for opcode 30 when joining an occupied channel.
-
-        If ``other_user_ids`` is provided they are added via :meth:`add_expected_members`.
-        When any non-local expected member is known, wait-for-welcome is enabled so a
-        local group is not committed.
-
-        Returns:
-            bool: True if wait-for-welcome was enabled.
-        """
-        if other_user_ids is not None:
-            self.add_expected_members(other_user_ids)
-        others = self._expected_member_ids - {int(self._local_user_id)}
-        if others:
-            self.set_wait_for_welcome(True)
-            return True
-        return False
 
     def add_expected_members(self, user_ids: Iterable[int | str]) -> None:
         """

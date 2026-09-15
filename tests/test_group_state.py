@@ -38,6 +38,17 @@ def test_create_key_package_returns_tuple():
     assert hpke_private != enc_private
 
 
+def test_create_key_package_reuses_persistent_signing_key():
+    from sorrydave.mls.group_state import _p256_public_from_der
+    from sorrydave.persistent_keys import generate_p256_keypair
+
+    pub, priv = generate_p256_keypair()
+    kp_bytes, _hpke, signing_der, _enc = create_key_package(99, signing_key_der=priv)
+    assert signing_der == priv
+    assert _p256_public_from_der(signing_der) == pub
+    assert len(kp_bytes) > 0
+
+
 def test_create_group_single_member():
     """create_group with one key package yields session with member count 1."""
     kp_bytes, *_ = create_key_package(111)

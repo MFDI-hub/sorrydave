@@ -230,3 +230,12 @@ class TestSaveLoadPersistentKey:
             assert loaded == priv2
         finally:
             os.unlink(path)
+
+
+class TestMatchPublicKeyPayload:
+    def test_fields(self):
+        from sorrydave.persistent_keys import build_match_public_key_payload
+
+        pub, _ = generate_p256_keypair()
+        payload = build_match_public_key_payload(111, pub, 1)
+        assert payload == {"user_id": 111, "public_key": pub, "key_version": 1}

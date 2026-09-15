@@ -159,20 +159,49 @@ class TestHandleExternalSenderPackage:
 
 
 class TestHandlePrepareTransition:
-    def test_transition_id_zero_calls_execute(self, session):
+    def test_transition_id_zero_defers_when_not_media_ready(self, session):
+        from sorrydave.session import PREPARE_DEFER_UNTIL_MEDIA_READY
+
         called = []
         original = session.execute_transition
         def mock_execute(tid):
             called.append(tid)
             original(tid)
         session.execute_transition = mock_execute
-        session.handle_prepare_transition(1, 0)
+        action = session.handle_prepare_transition(1, 0)
+        assert action == PREPARE_DEFER_UNTIL_MEDIA_READY
+        assert called == []
+
+    def test_transition_id_zero_executes_when_media_ready(self, session):
+        from sorrydave.session import PREPARE_EXECUTE_NOW
+
+        session.prepare_epoch(1)
+        pkg = ExternalSenderPackage(
+            sequence_number=0,
+            signature_key=b"\xAA" * 32,
+            credential_type=1,
+            identity=b"\x00" * 8,
+        )
+        session.handle_external_sender_package(pkg)
+        session._current_epoch = 1
+        session._refresh_send_ratchet()
+        called = []
+        original = session.execute_transition
+        def mock_execute(tid):
+            called.append(tid)
+            original(tid)
+        session.execute_transition = mock_execute
+        action = session.handle_prepare_transition(1, 0)
+        assert action == PREPARE_EXECUTE_NOW
         assert called == [0]
 
     def test_transition_id_nonzero_no_execute(self, session):
+        from sorrydave.session import PREPARE_WAIT_FOR_EXECUTE
+
         called = []
         session.execute_transition = lambda tid: called.append(tid)
-        session.handle_prepare_transition(1, 5)
+        action = session.handle_prepare_transition(1, 5)
+        assert action == PREPARE_WAIT_FOR_EXECUTE
         assert called == []
 
     def test_downgrade_prepare_enables_receive_passthrough(self, session):

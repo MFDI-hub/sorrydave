@@ -92,6 +92,7 @@ class TestMlsManagerPendingTransitions:
         assert self.mgr.is_media_ready() is False
         session._current_epoch = 1
         assert self.mgr.is_media_ready() is True
+        assert self.mgr.has_established_group() is True
 
     def test_start_protocol_clears_pending_transitions(self):
         self.mgr.record_pending_transition(4, 1)
@@ -127,7 +128,10 @@ class _HandshakeHarness:
             )
         )
         self.media_client = SimpleNamespace(
-            media_session=SimpleNamespace(set_dave_active=self._set_dave_session_active),
+            media_session=SimpleNamespace(
+                set_dave_active=self._set_dave_session_active,
+                _speaking_flags=0,
+            ),
             handle_dave_failure=self._handle_dave_failure,
         )
         if media_ready:
@@ -146,6 +150,8 @@ class _HandshakeHarness:
             "_was_ready_sent_for",
             "_mark_ready_sent_for",
             "_get_dave_protocol_version",
+            "_get_dave_transition_id",
+            "_set_dave_transition_id",
             "_get_dave_received_opcodes_for_diagnostics",
             "_debug_dave_state",
         ):
@@ -167,6 +173,9 @@ class _HandshakeHarness:
     async def _handle_dave_failure(self, reason: str) -> None:
         self.fail_reasons.append(reason)
 
+    async def _replay_sink_wants(self) -> None:
+        return None
+
     async def close(self) -> None:
         return None
 
@@ -181,7 +190,7 @@ def _make_mgr():
 
 
 class TestMediaConnectionTransitionDispatch:
-    def test_op29_tid0_activates_immediately_and_sends_no_op23(self):
+    def test_op29_tid0_activates_immediately_and_reports_ready(self):
         mgr, _voice, _media = _make_mgr()
         harness = _HandshakeHarness(mgr, media_ready=True)
 
@@ -189,7 +198,7 @@ class TestMediaConnectionTransitionDispatch:
             await harness._after_mls_handshake_message(0)
 
         asyncio.run(_run())
-        assert harness.dave_ready_ids == []
+        assert harness.dave_ready_ids == [0]
         assert harness.set_dave_active_calls == 1
         assert harness.mls_manager.active is True
         assert harness._dave_handshake_watchdog_task is None
