@@ -1,5 +1,7 @@
 """Comprehensive frame encryptor/decryptor and protocol_frame_check tests."""
 
+from __future__ import annotations
+
 import pytest
 from sorrydave.crypto.cipher import DAVE_MAGIC, uleb128_encode
 from sorrydave.crypto.ratchet import KeyRatchet
