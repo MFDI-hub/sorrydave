@@ -278,10 +278,10 @@ Creates a new MLS group with a single member (the given key package). Returns rf
 ### join_from_welcome
 
 ```python
-join_from_welcome(welcome_bytes: bytes, hpke_private_key: bytes, crypto: DefaultCryptoProvider | None = None) -> Group
+join_from_welcome(welcome_bytes: bytes, hpke_private_key: bytes, crypto: DefaultCryptoProvider | None = None, encryption_private_key: bytes | None = None, *, key_package: bytes) -> Group
 ```
 
-Joins a group from a Welcome message. **hpke_private_key** is the HPKE private key from the KeyPackage that was added.
+Joins a group from a Welcome message. **hpke_private_key** decrypts the Welcome (KeyPackage `init_key`). **encryption_private_key** decrypts later UpdatePath ciphertexts to the joiner's leaf. **key_package** is the serialized KeyPackage that was added and is required so the joiner leaf can be identified.
 
 ---
 
@@ -291,7 +291,7 @@ Joins a group from a Welcome message. **hpke_private_key** is the HPKE private k
 export_sender_base_secret(group: Group, sender_user_id: int) -> bytes
 ```
 
-Exports the 16-byte sender base secret via MLS Exporter: label `"Discord Secure Frames v0"`, context = 8-byte little-endian sender_user_id. Used to build `KeyRatchet` for send/receive.
+Exports the 16-byte sender base secret via the MLS exporter: label `"Discord Secure Frames v0"`, context = 8-byte little-endian sender_user_id. RFC 9420 §8.5 hashes that context. Used to build `KeyRatchet` for send/receive.
 
 ---
 

@@ -13,7 +13,6 @@ from sorrydave.mls.group_state import (
     export_sender_base_secret,
     get_dave_crypto_provider,
     join_from_welcome,
-    process_proposal,
     stage_commit_and_welcome,
 )
 
@@ -112,7 +111,9 @@ def test_join_from_welcome_invalid_raises():
     kp_bytes, hpke_private, *_ = create_key_package(999)
     crypto = get_dave_crypto_provider()
     with pytest.raises(Exception):  # noqa: B017 rfc9420 may raise various errors
-        join_from_welcome(b"invalid_welcome_bytes", hpke_private, crypto)
+        join_from_welcome(
+            b"invalid_welcome_bytes", hpke_private, crypto, key_package=kp_bytes
+        )
 
 
 def test_create_remove_proposal_for_self():
@@ -135,7 +136,7 @@ def test_create_update_proposal():
 
 
 def test_two_member_add_welcome_export():
-    """Add a second member, join via Welcome, and match exporter secrets (rfc9420 1.2.0)."""
+    """Add a second member, join via Welcome, and match exporter secrets."""
     from rfc9420.messages.key_packages import KeyPackage
 
     crypto = get_dave_crypto_provider()
@@ -152,8 +153,7 @@ def test_two_member_add_welcome_export():
         external_sender_identity=b"\x00" * 8,
     )
     with _rfc9420_dave_commit_interop():
-        hs = alice.add_member(KeyPackage.deserialize(kp_b), sig_a)
-    alice.process_proposal(hs, alice.own_leaf_index)
+        alice.add_member(KeyPackage.deserialize(kp_b), sig_a)
     _commit_bytes, welcomes = create_commit_and_welcome(alice, sig_a)
     assert welcomes
     bob = join_from_welcome(
@@ -191,8 +191,7 @@ def test_later_join_commit_keeps_exporter_in_sync_for_welcome_member():
         external_sender_identity=b"\x00" * 8,
     )
     with _rfc9420_dave_commit_interop():
-        hs_b = alice.add_member(KeyPackage.deserialize(kp_b), sig_a)
-    alice.process_proposal(hs_b, alice.own_leaf_index)
+        alice.add_member(KeyPackage.deserialize(kp_b), sig_a)
     _commit_b, welcomes_b = create_commit_and_welcome(alice, sig_a)
     bob = join_from_welcome(
         welcomes_b[0],
@@ -205,7 +204,6 @@ def test_later_join_commit_keeps_exporter_in_sync_for_welcome_member():
 
     with _rfc9420_dave_commit_interop():
         hs_c = alice.add_member(KeyPackage.deserialize(kp_c), sig_a)
-    alice.process_proposal(hs_c, alice.own_leaf_index)
     bob.process_proposal(hs_c, alice.own_leaf_index)
     commit_c, welcomes_c = create_commit_and_welcome(alice, sig_a)
     assert welcomes_c
@@ -259,16 +257,13 @@ def test_remove_then_readd_same_key_package_can_share_one_commit():
     kp_b, _, _, _ = create_key_package(20, crypto)
     group = create_group(b"replace-member-group", kp_a, crypto)
 
-    initial_add = group.add_member(KeyPackage.deserialize(kp_b), sig_a)
-    process_proposal(group, initial_add, sender_leaf_index=0)
+    group.add_member(KeyPackage.deserialize(kp_b), sig_a)
     create_commit_and_welcome(group, sig_a)
     assert group.member_count == 2
 
-    remove = group.remove_member(1, sig_a)
-    process_proposal(group, remove, sender_leaf_index=0)
+    group.remove_member(1, sig_a)
     _, _, _remove_candidate = stage_commit_and_welcome(group, sig_a)
-    replacement_add = group.add_member(KeyPackage.deserialize(kp_b), sig_a)
-    process_proposal(group, replacement_add, sender_leaf_index=0)
+    group.add_member(KeyPackage.deserialize(kp_b), sig_a)
 
     _, welcomes, staged = stage_commit_and_welcome(group, sig_a)
     assert welcomes

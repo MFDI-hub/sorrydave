@@ -21,6 +21,7 @@ from sorrydave.mls.group_state import (
     export_sender_base_secret,
     get_dave_crypto_provider,
     join_from_welcome,
+    process_proposal,
     serialize_external_senders_extension,
     validate_group_external_sender,
 )
@@ -182,8 +183,15 @@ class TestApplyCommit:
 
 class TestJoinFromWelcome:
     def test_invalid_welcome_raises(self, crypto):
+        kp_bytes, *_ = create_key_package(1, crypto)
         with pytest.raises(Exception):  # noqa: B017
-            join_from_welcome(b"\x00\x01\x02", b"\x00" * 32, crypto)
+            join_from_welcome(
+                b"\x00\x01\x02", b"\x00" * 32, crypto, key_package=kp_bytes
+            )
+
+    def test_key_package_is_required(self, crypto):
+        with pytest.raises(TypeError):
+            join_from_welcome(b"\x00\x01\x02", b"\x00" * 32, crypto)  # type: ignore[call-arg]
 
 
 class TestWriteVarint:
@@ -249,14 +257,23 @@ class TestCheckNoDuplicateCredentials:
 
 class TestCreateCommitAndWelcome:
     def test_basic_commit_after_update(self, crypto):
-        """Create a commit after an update proposal (avoids cross-user kp signature issues)."""
+        """Creating an Update does not queue it, so a following commit still succeeds."""
         kp_bytes, _, signing_der, _ = create_key_package(1, crypto)
         group = create_group(b"commit-group", kp_bytes, crypto)
-        create_update_proposal(group, signing_der, 1, crypto)
+        proposal = create_update_proposal(group, signing_der, 1, crypto)
         commit_bytes, welcomes = create_commit_and_welcome(group, signing_der)
-        assert isinstance(commit_bytes, bytes)
-        assert len(commit_bytes) > 0
+        assert isinstance(proposal, bytes) and len(proposal) > 0
+        assert isinstance(commit_bytes, bytes) and len(commit_bytes) > 0
         assert isinstance(welcomes, list)
+
+    def test_echoed_own_update_cannot_be_committed(self, crypto):
+        """RFC 9420 §12.2: a commit cannot contain the committer's own Update."""
+        kp_bytes, _, signing_der, _ = create_key_package(1, crypto)
+        group = create_group(b"commit-own-update", kp_bytes, crypto)
+        proposal = create_update_proposal(group, signing_der, 1, crypto)
+        process_proposal(group, proposal, group.own_leaf_index)
+        with pytest.raises(Exception, match="Update proposal from the committer"):
+            create_commit_and_welcome(group, signing_der)
 
 
 class TestCreateRemoveProposalForSelf:

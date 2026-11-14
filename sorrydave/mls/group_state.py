@@ -212,8 +212,8 @@ def create_key_package(
     Used by DaveSession when prepare_epoch(1) is called. Identity is big-endian user_id (8 bytes).
     Lifetime not_before=0, not_after=2^64-1.
 
-    rfc9420 1.2.0 requires a distinct HPKE init_key from the leaf encryption_key
-    (RFC 9420 §10.1) and SignWithLabel for LeafNodeTBS / KeyPackageTBS.
+    RFC 9420 §10.1 requires a distinct HPKE init_key from the leaf encryption_key,
+    and LeafNodeTBS / KeyPackageTBS are signed with SignWithLabel.
 
     Args:
         user_id (int): User identifier (64-bit).
@@ -482,9 +482,11 @@ def create_group(
         )
 
     kp = KeyPackage.deserialize(key_package_bytes)
-    return MLSGroupSession.create_with_config(
+    session = MLSGroupSession.create_with_config(
         config, group_id, kp, initial_extensions=initial_extensions
     )
+    _enable_dave_unique_identities(session)
+    return session
 
 
 def join_from_welcome(
@@ -492,7 +494,8 @@ def join_from_welcome(
     hpke_private_key: bytes,
     crypto: Union[DefaultCryptoProvider, None] = None,
     encryption_private_key: Union[bytes, None] = None,
-    key_package: Union[bytes, None] = None,
+    *,
+    key_package: bytes,
 ) -> MLSGroupSession:
     """
     Join group from Welcome message.
@@ -504,8 +507,8 @@ def join_from_welcome(
         hpke_private_key (bytes): HPKE private key for KeyPackage.init_key (Welcome decrypt).
         crypto (Union[DefaultCryptoProvider, None]): Crypto provider; uses get_dave_crypto_provider() if None.
         encryption_private_key (Union[bytes, None]): HPKE private key for LeafNode.encryption_key.
-            Required by rfc9420 1.2.0 to decrypt later UpdatePath ciphertexts.
-        key_package (Union[bytes, None]): Optional serialized KeyPackage used to locate the joiner leaf.
+            Required to decrypt later UpdatePath ciphertexts.
+        key_package (bytes): Serialized KeyPackage that was added. Required so the joiner leaf can be identified.
 
     Returns:
         MLSGroupSession: Session for the joined group.
@@ -520,8 +523,10 @@ def join_from_welcome(
         crypto = get_dave_crypto_provider()
     storage = MemoryStorageProvider()
     config = GroupConfig(crypto_provider=crypto, storage_provider=storage)
+    if not key_package:
+        raise ValueError("key_package is required to join from a Welcome")
     welcome = Welcome.deserialize(welcome_bytes)
-    kp_obj = KeyPackage.deserialize(key_package) if key_package is not None else None
+    kp_obj = KeyPackage.deserialize(key_package)
     inner = ProtocolMLSGroup.from_welcome(
         welcome=welcome,
         hpke_private_key=hpke_private_key,
@@ -534,7 +539,9 @@ def join_from_welcome(
         key_package=kp_obj,
         encryption_private_key=encryption_private_key,
     )
-    return MLSGroupSession(MLSGroup(config, inner))
+    session = MLSGroupSession(MLSGroup(config, inner))
+    _enable_dave_unique_identities(session)
+    return session
 
 
 def export_sender_base_secret(session: MLSGroupSession, sender_user_id: int) -> bytes:
@@ -544,8 +551,8 @@ def export_sender_base_secret(session: MLSGroupSession, sender_user_id: int) -> 
     Used by DaveSession when refreshing send/receive ratchets (KeyRatchet base secret).
     Uses label "Discord Secure Frames v0" and context = little-endian 64-bit sender user ID.
 
-    RFC 9420 §8.5 hashes Context before ExpandWithLabel.  Compute the exporter
-    directly because rfc9420 1.2.0 incorrectly passes the raw context.
+    RFC 9420 §8.5 hashes Context before ExpandWithLabel. The library exporter
+    does that hash.
 
     Args:
         session (MLSGroupSession): MLS group session.
@@ -555,15 +562,7 @@ def export_sender_base_secret(session: MLSGroupSession, sender_user_id: int) -> 
         bytes: 16-byte base secret for KeyRatchet.
     """
     context = sender_user_id.to_bytes(8, "little")
-    inner = session._group._inner
-    crypto = inner._crypto_provider
-    exporter_secret = inner.get_exporter_secret()
-    derived = crypto.derive_secret(exporter_secret, EXPORTER_LABEL)
-    context_hash = crypto.hash(context)
-    result: bytes = crypto.expand_with_label(
-        derived, b"exported", context_hash, EXPORTER_LENGTH
-    )
-    return result
+    return session.export_secret(EXPORTER_LABEL, context, EXPORTER_LENGTH)
 
 
 def iter_members(session: MLSGroupSession) -> list[tuple[int, bytes]]:
@@ -778,6 +777,9 @@ def create_remove_proposal_for_self(session: MLSGroupSession, signing_key_der: b
     Optional helper for custom MLS flows. DAVE clients must not send opcode 27
     (gateway-to-client only); the voice gateway issues Remove proposals.
 
+    The proposal is not queued on this session. Queue the echoed bytes with
+    process_proposal so a later commit does not contain two copies.
+
     Args:
         session (MLSGroupSession): MLS group session.
         signing_key_der (bytes): Signing private key (DER) for the member.
@@ -785,7 +787,10 @@ def create_remove_proposal_for_self(session: MLSGroupSession, signing_key_der: b
     Returns:
         bytes: Serialized MLS Plaintext proposal.
     """
-    return session.remove_member(session.own_leaf_index, signing_key_der)
+    from rfc9420.interop.wire import encode_handshake
+
+    plaintext = session._group.remove(session.own_leaf_index, signing_key_der)
+    return encode_handshake(plaintext)
 
 
 def create_update_proposal(
@@ -802,6 +807,10 @@ def create_update_proposal(
     ``session._pending_leaf_encryption_private_key`` and must replace the
     member's leaf encryption key before this update is committed; otherwise
     the member cannot decrypt UpdatePath ciphertexts to the new leaf.
+
+    The proposal is not queued on this session. Queue the echoed bytes with
+    process_proposal. RFC 9420 §12.2 forbids a commit that contains the
+    committer's own Update.
 
     Args:
         session (MLSGroupSession): MLS group session.
@@ -860,4 +869,17 @@ def create_update_proposal(
         signature=Signature(leaf_sig),
     )
     cast(Any, session)._pending_leaf_encryption_private_key = enc_private
-    return session.update_self(leaf_node, signing_key_der)
+    from rfc9420.interop.wire import encode_handshake
+
+    plaintext = session._group.update(leaf_node, signing_key_der)
+    return encode_handshake(plaintext)
+
+
+def _enable_dave_unique_identities(session: MLSGroupSession) -> None:
+    """Reject two leaves that share a basic credential identity.
+
+    RFC 9420 allows one identity on several devices. DAVE does not: a commit
+    whose tree repeats a user-id credential is invalid. rfc9420 leaves that
+    check off unless the group opts in.
+    """
+    session._group._inner.set_enforce_unique_credential_identities(True)
