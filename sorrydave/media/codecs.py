@@ -215,9 +215,7 @@ def transform_h26x_frame_for_encrypt(
         if h265:
             nal_type = (frame[nal_unit_start_index] & 0x7E) >> 1
             if nal_type < H265_NAL_TYPE_VCL_CUTOFF:
-                hdr_end = min(
-                    nal_unit_start_index + H265_NAL_HEADER_LEN, next_nalu_start
-                )
+                hdr_end = min(nal_unit_start_index + H265_NAL_HEADER_LEN, next_nalu_start)
                 builder.add_unencrypted(frame[nal_unit_start_index:hdr_end])
                 builder.add_encrypted(frame[hdr_end:next_nalu_start])
             else:

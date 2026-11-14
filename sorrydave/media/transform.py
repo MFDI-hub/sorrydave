@@ -108,9 +108,7 @@ def _contains_h26x_start_code(data: bytes) -> bool:
     return False
 
 
-def _validate_encrypted_h26x_frame(
-    protocol_frame: bytes, ranges: list[UnencryptedRange]
-) -> bool:
+def _validate_encrypted_h26x_frame(protocol_frame: bytes, ranges: list[UnencryptedRange]) -> bool:
     """Return True if encrypted sections (plus footer) contain no H.26x start code.
 
     Port of davey ``validate_encrypted_frame``: plaintext NAL start codes are

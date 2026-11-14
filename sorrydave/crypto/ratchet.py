@@ -50,8 +50,10 @@ def _hkdf_expand(prk: bytes, info: bytes, size: int) -> bytes:
 def expand_with_label(secret: bytes, label: str, context: bytes, length: int) -> bytes:
     """RFC 9420 ExpandWithLabel; label is prefixed with ``MLS 1.0 ``."""
     mls_label = f"MLS 1.0 {label}".encode("ascii")
-    kdf_label = (length).to_bytes(2, "big") + _write_opaque_varint(mls_label) + _write_opaque_varint(
-        context
+    kdf_label = (
+        (length).to_bytes(2, "big")
+        + _write_opaque_varint(mls_label)
+        + _write_opaque_varint(context)
     )
     return _hkdf_expand(secret, kdf_label, length)
 
@@ -133,9 +135,7 @@ class KeyRatchet:
         if generation in self._cache:
             return self._cache[generation][0]
         if self._next_generation > generation:
-            raise ValueError(
-                f"Generation {generation} was erased and cannot be re-derived"
-            )
+            raise ValueError(f"Generation {generation} was erased and cannot be re-derived")
         while self._next_generation <= generation:
             self._advance()
         return self._cache[generation][0]
@@ -145,9 +145,7 @@ class KeyRatchet:
         generation = self._next_generation
         key = derive_tree_secret(self._next_secret, "key", generation, KEY_LENGTH)
         derive_tree_secret(self._next_secret, "nonce", generation, NONCE_LENGTH)
-        self._next_secret = derive_tree_secret(
-            self._next_secret, "secret", generation, HASH_LENGTH
-        )
+        self._next_secret = derive_tree_secret(self._next_secret, "secret", generation, HASH_LENGTH)
         if generation == 0xFFFFFFFF:
             raise ValueError("key ratchet generation exhausted; refusing to reuse generation 0")
         self._next_generation = generation + 1

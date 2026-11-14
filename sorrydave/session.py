@@ -586,7 +586,7 @@ class DaveSession:
         as ``HandshakeApplyResult.applied=False``.
 
         Args:
-            transition_id (int): Transition identifier from the announce.
+            _transition_id (int): Transition identifier from the announce.
             commit_bytes (bytes): Serialized MLS commit message.
 
         Raises:
@@ -634,11 +634,11 @@ class DaveSession:
         Process opcode 30: join group from welcome (we were added).
 
         Args:
-            transition_id (int): Transition identifier from the welcome message.
+            _transition_id (int): Transition identifier from the welcome message.
             welcome_bytes (bytes): Serialized MLS Welcome message.
 
         Raises:
-            ValueError: If no HPKE private key is available to process the welcome.
+            ValueError: If no HPKE private key or key package is available to process the welcome.
             InvalidCommitError: If the welcome cannot be processed or the resulting
                 group fails DAVE validation (same recovery path as handle_commit).
         """
@@ -646,6 +646,8 @@ class DaveSession:
 
         if self._hpke_private_key is None:
             raise ValueError("No HPKE private key; cannot process welcome")
+        if self._key_package_bytes is None:
+            raise ValueError("No key package; cannot join from welcome")
         if self._external_sender is None:
             raise ValueError("No external sender package; cannot validate welcome group")
         if self._crypto is None:
@@ -1081,7 +1083,9 @@ class DaveSession:
         if (
             sender_id not in self._receive_ratchets
             and sender_id not in self._pending_receive_ratchets
-            and not any(sender_id in retained for _expiry, retained in self._retained_receive_ratchets)
+            and not any(
+                sender_id in retained for _expiry, retained in self._retained_receive_ratchets
+            )
         ):
             self._refresh_receive_ratchets()
         primary = self._receive_ratchets.get(sender_id)

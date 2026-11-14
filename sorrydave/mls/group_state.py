@@ -163,9 +163,7 @@ def _p256_public_from_der(private_key_der: bytes) -> bytes:
     from cryptography.hazmat.primitives.asymmetric import ec
 
     key = serialization.load_der_private_key(private_key_der, password=None)
-    if not isinstance(key, ec.EllipticCurvePrivateKey) or not isinstance(
-        key.curve, ec.SECP256R1
-    ):
+    if not isinstance(key, ec.EllipticCurvePrivateKey) or not isinstance(key.curve, ec.SECP256R1):
         raise ValueError("signing_key_der must be a P-256 EC private key")
     sig_public_bytes = key.public_key().public_bytes(
         serialization.Encoding.X962,
@@ -621,9 +619,7 @@ def _reject_inline_commit_proposals(commit_mls_plaintext_bytes: bytes) -> None:
     commit = Commit.deserialize(framed.content)
     for proposal in commit.proposals:
         if proposal.typ != ProposalOrRefType.REFERENCE:
-            raise InvalidCommitError(
-                "DAVE commits must contain only cached proposal references"
-            )
+            raise InvalidCommitError("DAVE commits must contain only cached proposal references")
 
 
 def _check_no_duplicate_credentials(session: MLSGroupSession) -> None:
@@ -721,9 +717,7 @@ def stage_commit_and_welcome(
     from rfc9420.interop.wire import encode_handshake
 
     with _PROPOSAL_VALIDATION_PATCH_LOCK, _rfc9420_dave_commit_interop():
-        staged = session._group.create_commit(
-            signing_key_der, return_per_joiner_welcomes=True
-        )
+        staged = session._group.create_commit(signing_key_der, return_per_joiner_welcomes=True)
         # create_commit() marks the live group pending even though its result is
         # only a Discord op28 candidate. Return to the baseline operational
         # state so later op27 messages can add/revoke proposals and produce
