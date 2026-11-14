@@ -169,6 +169,87 @@ def test_two_member_add_welcome_export():
     assert export_sender_base_secret(alice, 2) == export_sender_base_secret(bob, 2)
 
 
+def test_later_join_commit_keeps_exporter_in_sync_for_welcome_member():
+    """Occupied joiner (Bob) must match Alice after a later Add commit (Carol)."""
+    from rfc9420 import get_commit_sender_leaf_index
+    from rfc9420.messages.key_packages import KeyPackage
+
+    from sorrydave.mls.opcodes import public_message_bytes
+
+    crypto = get_dave_crypto_provider()
+    kp_a, _, sig_a, _ = create_key_package(1, crypto)
+    kp_b, init_b, _, enc_b = create_key_package(2, crypto)
+    kp_c, init_c, _, enc_c = create_key_package(3, crypto)
+    from sorrydave.mls.group_state import _rfc9420_dave_commit_interop
+
+    alice = create_group(
+        b"later-join-group",
+        kp_a,
+        crypto,
+        external_sender_signature_key=b"\xaa" * 65,
+        external_sender_credential_type=1,
+        external_sender_identity=b"\x00" * 8,
+    )
+    with _rfc9420_dave_commit_interop():
+        hs_b = alice.add_member(KeyPackage.deserialize(kp_b), sig_a)
+    alice.process_proposal(hs_b, alice.own_leaf_index)
+    _commit_b, welcomes_b = create_commit_and_welcome(alice, sig_a)
+    bob = join_from_welcome(
+        welcomes_b[0],
+        init_b,
+        crypto,
+        encryption_private_key=enc_b,
+        key_package=kp_b,
+    )
+    assert export_sender_base_secret(alice, 1) == export_sender_base_secret(bob, 1)
+
+    with _rfc9420_dave_commit_interop():
+        hs_c = alice.add_member(KeyPackage.deserialize(kp_c), sig_a)
+    alice.process_proposal(hs_c, alice.own_leaf_index)
+    bob.process_proposal(hs_c, alice.own_leaf_index)
+    commit_c, welcomes_c = create_commit_and_welcome(alice, sig_a)
+    assert welcomes_c
+    incoming = public_message_bytes(commit_c)
+    apply_commit(bob, incoming, get_commit_sender_leaf_index(incoming))
+    carol = join_from_welcome(
+        welcomes_c[0],
+        init_c,
+        crypto,
+        encryption_private_key=enc_c,
+        key_package=kp_c,
+    )
+    from sorrydave.mls.group_state import iter_member_keys
+
+    occupied = {
+        name: [
+            int.from_bytes(identity[:8], "big")
+            for _leaf, identity, _sig in iter_member_keys(group)
+            if identity and len(identity) >= 8
+        ]
+        for name, group in (("alice", alice), ("bob", bob), ("carol", carol))
+    }
+    for name, user_ids in occupied.items():
+        assert sorted(user_ids) == [1, 2, 3], name
+    for user_id in (1, 2, 3):
+        assert export_sender_base_secret(alice, user_id) == export_sender_base_secret(
+            bob, user_id
+        )
+        assert export_sender_base_secret(alice, user_id) == export_sender_base_secret(
+            carol, user_id
+        )
+
+
+def test_welcome_parent_hash_skip_does_not_replace_commit_parent_hash():
+    """Later commits must use rfc9420's original parent-hash, not a leftover Welcome patch."""
+    from rfc9420.protocol.tree.ratchet_tree import RatchetTree
+
+    orig = getattr(RatchetTree, "_sorrydave_orig_parent_hash", None)
+    current = RatchetTree._compute_parent_hash_for_leaf
+    assert getattr(current, "_sorrydave_one_hop", False) is False
+    if orig is not None:
+        assert current is orig
+
+
 def test_remove_then_readd_same_key_package_can_share_one_commit():
     """Discord sends replacement Remove/Add proposals in separate op27 messages."""
     from rfc9420.messages.key_packages import KeyPackage

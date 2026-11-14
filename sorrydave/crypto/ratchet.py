@@ -148,7 +148,9 @@ class KeyRatchet:
         self._next_secret = derive_tree_secret(
             self._next_secret, "secret", generation, HASH_LENGTH
         )
-        self._next_generation = (self._next_generation + 1) & 0xFFFFFFFF
+        if generation == 0xFFFFFFFF:
+            raise ValueError("key ratchet generation exhausted; refusing to reuse generation 0")
+        self._next_generation = generation + 1
         now = time.monotonic()
         if (
             self._max_generation_seen is not None

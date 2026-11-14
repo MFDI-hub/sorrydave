@@ -53,14 +53,19 @@ def uleb128_decode(data: bytes, offset: int = 0) -> tuple[int, int]:
     shift = 0
     pos = offset
     while pos < len(data):
+        if shift >= 64:
+            raise ValueError("ULEB128 overflow")
         byte = data[pos]
         result |= (byte & 0x7F) << shift
         pos += 1
         if byte < 0x80:
+            # A continuation that ends in a 0 group is non-canonical (overlong).
+            if shift > 0 and (byte & 0x7F) == 0:
+                raise ValueError("ULEB128 non-canonical encoding")
+            if result >= (1 << 64):
+                raise ValueError("ULEB128 overflow")
             return result, pos
         shift += 7
-        if shift >= 64:  # prevent unbounded
-            raise ValueError("ULEB128 overflow")
     raise ValueError("ULEB128 truncated")
 
 
@@ -134,6 +139,20 @@ def _decrypt_gcm(key: bytes, nonce_12: bytes, ciphertext: bytes, tag_8: bytes, a
         raise DecryptionError("GCM verification failed") from e
 
 
+def _validate_unencrypted_ranges(frame_len: int, ranges: list[UnencryptedRange]) -> None:
+    """Reject ranges that overlap, are unsorted, or fall outside the frame."""
+    prev_end = 0
+    for r in ranges:
+        if r.offset < 0 or r.length < 0:
+            raise ValueError("unencrypted range has a negative bound")
+        if r.offset < prev_end:
+            raise ValueError("unencrypted ranges overlap or are not sorted")
+        end = r.offset + r.length
+        if end < r.offset or end > frame_len:
+            raise ValueError("unencrypted range exceeds the frame")
+        prev_end = end
+
+
 def encrypt_interleaved(
     key: bytes,
     nonce_32: int,
@@ -156,6 +175,7 @@ def encrypt_interleaved(
     Returns:
         tuple[bytes, bytes]: (interleaved frame with ciphertext in encrypted ranges, 8-byte tag).
     """
+    _validate_unencrypted_ranges(len(frame), unencrypted_ranges)
     if not unencrypted_ranges:
         # Full frame encrypted
         aad = b""
@@ -168,7 +188,7 @@ def encrypt_interleaved(
     encrypted_parts = []
     aad_parts = []
     last_end = 0
-    for r in sorted(unencrypted_ranges, key=lambda x: x.offset):
+    for r in unencrypted_ranges:
         if r.offset > last_end:
             encrypted_parts.append(frame[last_end : r.offset])
         aad_parts.append(frame[r.offset : r.offset + r.length])
@@ -185,7 +205,7 @@ def encrypt_interleaved(
     out = bytearray()
     ct_offset = 0
     last_end = 0
-    for r in sorted(unencrypted_ranges, key=lambda x: x.offset):
+    for r in unencrypted_ranges:
         if r.offset > last_end:
             n = r.offset - last_end
             out.extend(ciphertext_block[ct_offset : ct_offset + n])
@@ -223,6 +243,7 @@ def decrypt_interleaved(
     Raises:
         DecryptionError: On tag mismatch or invalid data.
     """
+    _validate_unencrypted_ranges(len(interleaved), unencrypted_ranges)
     if not unencrypted_ranges:
         nonce_12 = expand_nonce_96(nonce_32)
         return _decrypt_gcm(key, nonce_12, interleaved, tag_8, b"")
@@ -230,7 +251,7 @@ def decrypt_interleaved(
     encrypted_parts = []
     aad_parts = []
     last_end = 0
-    for r in sorted(unencrypted_ranges, key=lambda x: x.offset):
+    for r in unencrypted_ranges:
         if r.offset > last_end:
             encrypted_parts.append(interleaved[last_end : r.offset])
         aad_parts.append(interleaved[r.offset : r.offset + r.length])
@@ -247,7 +268,7 @@ def decrypt_interleaved(
     out = bytearray()
     pt_offset = 0
     last_end = 0
-    for r in sorted(unencrypted_ranges, key=lambda x: x.offset):
+    for r in unencrypted_ranges:
         if r.offset > last_end:
             n = r.offset - last_end
             out.extend(plaintext_block[pt_offset : pt_offset + n])

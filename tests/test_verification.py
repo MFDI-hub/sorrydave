@@ -92,15 +92,15 @@ class TestVerificationStoreCheckMatch:
         store.add_verified(1, b"correct_key")
         assert store.check_match(1, b"wrong_key") is False
 
-    def test_no_stored_returns_true(self):
+    def test_no_stored_returns_none(self):
         store = VerificationStore()
-        assert store.check_match(999, b"any_key") is True
+        assert store.check_match(999, b"any_key") is None
 
-    def test_after_remove_returns_true(self):
+    def test_after_remove_returns_none(self):
         store = VerificationStore()
         store.add_verified(1, b"key")
         store.remove_verified(1)
-        assert store.check_match(1, b"different_key") is True
+        assert store.check_match(1, b"different_key") is None
 
     def test_overwrite_then_check(self):
         store = VerificationStore()

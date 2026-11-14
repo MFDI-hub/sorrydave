@@ -58,6 +58,38 @@ class TestSessionProperties:
         assert session.receive_ratchet_user_ids == frozenset()
         session._receive_ratchets[999] = session._send_ratchet
         assert session.receive_ratchet_user_ids == frozenset({999})
+        session._pending_receive_ratchets[1001] = session._send_ratchet
+        assert session.receive_ratchet_user_ids == frozenset({999, 1001})
+
+    def test_identity_to_user_id_requires_snowflake_bytes(self):
+        assert DaveSession._identity_to_user_id(b"") is None
+        assert DaveSession._identity_to_user_id(b"\x01") is None
+        snowflake = 1088793182420074536
+        assert DaveSession._identity_to_user_id(snowflake.to_bytes(8, "big")) == snowflake
+
+    def test_commit_keeps_live_receive_keys_until_execute(self):
+        session = _ready_session()
+        live = session._send_ratchet
+        session._receive_ratchets = {9: live}
+        session._stage_next_epoch_receive_ratchets()
+        assert session._receive_ratchets[9] is live
+        session._pending_receive_ratchets = {9: session._send_ratchet}
+        session._install_staged_receive_ratchets()
+        assert session._pending_receive_ratchets == {}
+        assert 9 in session._receive_ratchets
+        assert any(9 in retained for _expiry, retained in session._retained_receive_ratchets)
+
+    def test_get_decryptor_tries_pending_epoch_as_fallback(self):
+        from sorrydave.crypto.ratchet import KeyRatchet
+
+        session = _ready_session()
+        old_r = KeyRatchet(b"\x01" * 16)
+        new_r = KeyRatchet(b"\x02" * 16)
+        session._receive_ratchets = {9: old_r}
+        session._pending_receive_ratchets = {9: new_r}
+        decryptor = session.get_decryptor(9)
+        assert decryptor._ratchet is old_r
+        assert any(ratchet is new_r for _expiry, ratchet in decryptor._fallback_ratchets)
 
     def test_encrypt_frame_appends_magic(self):
         session = _ready_session()

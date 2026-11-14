@@ -62,7 +62,8 @@ def sign_discord_self_signature(
         private_key_der (bytes): P256 private key in DER (PKCS#8) form.
 
     Returns:
-        bytes: ECDSA signature (raw r||s or DER; caller uses for upload).
+        bytes: DER-encoded ECDSA-SHA256 signature (ASN.1 SEQUENCE of r, s).
+        Discord's voice public-key upload expects this DER form.
     """
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -152,8 +153,17 @@ def save_persistent_signature_key(storage_path: str, private_key_der: bytes) -> 
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    with open(storage_path, "wb") as f:
-        f.write(pem)
+    import contextlib
+    import os
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(storage_path, flags, 0o600)
+    try:
+        os.write(fd, pem)
+    finally:
+        os.close(fd)
+    with contextlib.suppress(OSError):
+        os.chmod(storage_path, 0o600)
 
 
 def load_persistent_signature_key(storage_path: str) -> Union[bytes, None]:

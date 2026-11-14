@@ -78,6 +78,10 @@ def load_voice_module(module_name: str):
     if existing is not None and getattr(existing, "__file__", None):
         return existing
     path = _VOICE_DIR / f"{module_name}.py"
+    if not path.is_file():
+        import pytest
+
+        pytest.skip(f"optional discordy voice module is not in this repo: {path}")
     spec = importlib.util.spec_from_file_location(full_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load {full_name} from {path}")

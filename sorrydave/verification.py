@@ -32,10 +32,9 @@ class VerificationStore:
     """
     In-memory store of verified user identities (ephemeral and persistent).
 
-    Use add_verified() after out-of-band verification. Use check_match() in a
-    call to see if the key presented by a user matches the previously verified key.
-    Mismatch detection: check_match() returns False when a different key is
-    presented than the one stored.
+    Use add_verified() after out-of-band verification. check_match() returns
+    True on a match, False when a different key is stored, and None when the
+    user has never been verified.
     """
 
     def __init__(self) -> None:
@@ -75,24 +74,21 @@ class VerificationStore:
         """
         return self._store.get(user_id)
 
-    def check_match(self, user_id: int, public_key: bytes) -> bool:
+    def check_match(self, user_id: int, public_key: bytes) -> Union[bool, None]:
         """
-        Check if the given public key matches the previously verified key for this user.
-
-        Returns True if there is no stored verification (no mismatch) or if the
-        key matches. Returns False when we have a stored key and it differs
-        (mismatch: different device, key replacement, or impersonation).
+        Compare a presented key with the stored verified key.
 
         Args:
             user_id (int): User ID whose key is being checked.
             public_key (bytes): Key presented in the current call.
 
         Returns:
-            bool: True if match or no stored verification; False if mismatch.
+            Union[bool, None]: True if it matches the stored key, False if a
+            different key is stored, None if this user has never been verified.
         """
         entry = self._store.get(user_id)
         if entry is None:
-            return True
+            return None
         return entry.public_key == public_key
 
     def remove_verified(self, user_id: int) -> None:

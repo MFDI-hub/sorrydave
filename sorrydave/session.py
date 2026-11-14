@@ -17,6 +17,7 @@ from sorrydave.mls.group_state import (
     apply_staged_commit,
     create_group,
     get_dave_crypto_provider,
+    iter_member_keys,
     iter_members,
     process_proposal,
     stage_commit_and_welcome,
@@ -135,9 +136,19 @@ class DaveSession:
         # Per-sender KeyRatchet for current epoch (sender_user_id -> KeyRatchet)
         self._send_ratchet: Union[KeyRatchet, None] = None
         self._receive_ratchets: dict[int, KeyRatchet] = {}
+        # Extra ratchets derived with MLS-Exporter context = leaf index (not snowflake).
+        # Official clients follow protocol.md (little-endian user id); this is only a
+        # decrypt fallback when credential identity is missing or exporter context differs.
+        self._leaf_export_ratchets: dict[int, KeyRatchet] = {}
         # Retained previous-epoch receive ratchets (expiry_monotonic, ratchet_dict) for in-flight decryption
         self._retained_receive_ratchets: list[tuple[float, dict[int, KeyRatchet]]] = []
-        self._retention_seconds = 10.0
+        # New-epoch receive keys after op29, installed as current on opcode 22.
+        self._pending_receive_ratchets: dict[int, KeyRatchet] = {}
+        self._pending_leaf_export_ratchets: dict[int, KeyRatchet] = {}
+        self._pending_member_leaf_indices: dict[int, int] = {}
+        # Jitter/logging can delay first decrypt >10s after a commit; keep prior
+        # epoch keys long enough to cover that plus Discord's execute window.
+        self._retention_seconds = 30.0
         # Passthrough mode for upgrade/downgrade (receive enabled first on downgrade, then send on execute)
         self._receive_passthrough = False
         self._send_passthrough = False
@@ -236,12 +247,36 @@ class DaveSession:
     @property
     def receive_ratchet_user_ids(self) -> frozenset[int]:
         """User IDs that currently have a receive ratchet (diagnostics/logging)."""
-        return frozenset(self._receive_ratchets)
+        ids = set(self._receive_ratchets)
+        ids.update(self._pending_receive_ratchets)
+        for _expiry, retained in self._retained_receive_ratchets:
+            ids.update(retained)
+        return frozenset(ids)
 
     def _invalidate_cryptors(self) -> None:
         """Drop cached encryptor/decryptors so the next get_* rebuilds them."""
         self._encryptor = None
         self._decryptors = {}
+
+    def _sync_epoch_from_group(self) -> None:
+        """Copy the MLS group's epoch. Local ``+= 1`` is wrong for mid-call joins."""
+        if self._group is None:
+            return
+        self._current_epoch = int(self._group.epoch)
+
+    def _revalidate_dave_group(self) -> None:
+        """Reject a group that a commit moved off the DAVE extension set."""
+        if self._group is None:
+            return
+        validate_group_dave_ciphersuite_and_extensions(self._group)
+        if self._external_sender is None:
+            return
+        validate_group_external_sender(
+            self._group,
+            self._external_sender.signature_key,
+            self._external_sender.credential_type,
+            self._external_sender.identity,
+        )
 
     def handle_external_sender_package(self, pkg: Union[ExternalSenderPackage, bytes]) -> None:
         """
@@ -429,6 +464,9 @@ class DaveSession:
         if not mls_messages:
             return summary
 
+        group_handle = getattr(self._group, "_group", None)
+        inner = getattr(group_handle, "_inner", None)
+        before_refs = set(getattr(inner, "_proposal_cache", {}) or ())
         incomplete = False
         for msg in mls_messages:
             try:
@@ -478,8 +516,17 @@ class DaveSession:
                 summary["applied"] += 1
             except Exception:
                 incomplete = True
-        if incomplete:
-            return {"applied": 0, "revoked": summary["revoked"], "skipped_self": summary["skipped_self"]}
+        if incomplete and inner is not None:
+            cache = getattr(inner, "_proposal_cache", {}) or {}
+            for ref in list(cache):
+                if ref not in before_refs:
+                    with contextlib.suppress(Exception):
+                        self._group.revoke_proposal(ref)
+            return {
+                "applied": 0,
+                "revoked": summary["revoked"],
+                "skipped_self": summary["skipped_self"],
+            }
         return summary
 
     def take_commit_welcome(self) -> Union[bytes, None]:
@@ -527,14 +574,24 @@ class DaveSession:
 
     def handle_commit(self, _transition_id: int, commit_bytes: bytes) -> None:
         """
-        Process opcode 29: apply commit to group and refresh receive ratchets.
+        Process opcode 29: apply commit to group.
+
+        Established groups keep the current receive ratchets until opcode 22
+        and stage the new-epoch keys as decrypt fallbacks. Senders still use
+        the previous epoch until execute_transition.
+
+        A foreign commit received before this member's group is established
+        (local epoch 0, and not the commit this member just created) is
+        ignored. That path returns without raising. Gateway helpers report it
+        as ``HandshakeApplyResult.applied=False``.
 
         Args:
             transition_id (int): Transition identifier from the announce.
             commit_bytes (bytes): Serialized MLS commit message.
 
         Raises:
-            InvalidCommitError: If no group exists or commit application fails.
+            InvalidCommitError: If no group exists, the commit is not a DAVE
+                reference-only commit, or commit application fails.
         """
         from rfc9420 import get_commit_sender_leaf_index
 
@@ -562,12 +619,15 @@ class DaveSession:
                 apply_commit(self._group, incoming, sender_leaf_index)
         finally:
             self._outbound_staged_commits.clear()
+        self._revalidate_dave_group()
         self._initial_commit_bytes = None
-        self._current_epoch += 1
+        self._sync_epoch_from_group()
         self._wait_for_welcome = False
-        self._refresh_receive_ratchets()
         if was_unestablished:
+            self._refresh_receive_ratchets()
             self._refresh_send_ratchet()
+        else:
+            self._stage_next_epoch_receive_ratchets()
 
     def handle_welcome(self, _transition_id: int, welcome_bytes: bytes) -> None:
         """
@@ -591,27 +651,24 @@ class DaveSession:
         if self._crypto is None:
             self._crypto = get_dave_crypto_provider()
         try:
-            self._group = join_from_welcome(
+            joined = join_from_welcome(
                 welcome_bytes,
                 self._hpke_private_key,
                 self._crypto,
                 encryption_private_key=self._encryption_private_key,
                 key_package=self._key_package_bytes,
             )
-            validate_group_dave_ciphersuite_and_extensions(self._group)
-            validate_group_external_sender(
-                self._group,
-                self._external_sender.signature_key,
-                self._external_sender.credential_type,
-                self._external_sender.identity,
-            )
+            if bytes(joined.group_id) != bytes(self._group_id):
+                raise InvalidCommitError("Welcome group_id does not match the channel")
+            self._group = joined
+            self._revalidate_dave_group()
         except InvalidCommitError:
             raise
         except Exception as e:
             raise InvalidCommitError(f"Welcome could not be processed: {e}") from e
         self._outbound_staged_commits.clear()
         self._initial_commit_bytes = None
-        self._current_epoch += 1
+        self._sync_epoch_from_group()
         self._wait_for_welcome = False
         self._refresh_receive_ratchets()
         self._refresh_send_ratchet()
@@ -714,7 +771,10 @@ class DaveSession:
             self._pending_transition_id = None
             self._pending_transition_protocol_version = None
         self._refresh_send_ratchet()
-        self._refresh_receive_ratchets()
+        if self._pending_receive_ratchets:
+            self._install_staged_receive_ratchets()
+        else:
+            self._refresh_receive_ratchets()
 
     def leave_group(self) -> Union[bytes, None]:
         """
@@ -729,6 +789,10 @@ class DaveSession:
         self._group = None
         self._send_ratchet = None
         self._receive_ratchets = {}
+        self._leaf_export_ratchets = {}
+        self._pending_receive_ratchets = {}
+        self._pending_leaf_export_ratchets = {}
+        self._pending_member_leaf_indices = {}
         self._retained_receive_ratchets = []
         self._invalidate_cryptors()
         self._member_leaf_indices = {}
@@ -775,6 +839,76 @@ class DaveSession:
         self._send_ratchet = KeyRatchet(base, retention_seconds=self._retention_seconds)
         self._encryptor = None
 
+    def _export_receive_ratchets(
+        self,
+    ) -> tuple[dict[int, KeyRatchet], dict[int, KeyRatchet], dict[int, int]]:
+        """Build receive ratchets from the current MLS group exporter."""
+        if self._group is None:
+            return {}, {}, {}
+        from sorrydave.mls.group_state import export_sender_base_secret
+
+        new_ratchets: dict[int, KeyRatchet] = {}
+        leaf_export: dict[int, KeyRatchet] = {}
+        member_leaves: dict[int, int] = {}
+        own_leaf = self._group.own_leaf_index
+        entries: list[tuple[int, bytes]] = []
+        seen_leaves: set[int] = set()
+        for leaf_index, identity, _signature_key in iter_member_keys(self._group):
+            entries.append((int(leaf_index), identity))
+            seen_leaves.add(int(leaf_index))
+        for leaf_index, identity in iter_members(self._group):
+            if int(leaf_index) not in seen_leaves:
+                entries.append((int(leaf_index), identity))
+
+        for leaf_index, identity in entries:
+            if leaf_index == own_leaf:
+                continue
+            user_id = self._identity_to_user_id(identity)
+            if user_id is None:
+                continue
+            member_leaves[user_id] = leaf_index
+            base = export_sender_base_secret(self._group, user_id)
+            new_ratchets[user_id] = KeyRatchet(base, retention_seconds=self._retention_seconds)
+            if leaf_index != user_id:
+                leaf_base = export_sender_base_secret(self._group, leaf_index)
+                leaf_export[user_id] = KeyRatchet(
+                    leaf_base, retention_seconds=self._retention_seconds
+                )
+        return new_ratchets, leaf_export, member_leaves
+
+    def _evict_expired_retained_ratchets(self) -> None:
+        now = time.monotonic()
+        self._retained_receive_ratchets = [
+            (expiry, retained)
+            for expiry, retained in self._retained_receive_ratchets
+            if expiry > now
+        ]
+
+    def _retain_current_receive_ratchets(self) -> None:
+        if self._receive_ratchets:
+            expiry = time.monotonic() + self._retention_seconds
+            self._retained_receive_ratchets.append((expiry, dict(self._receive_ratchets)))
+        self._evict_expired_retained_ratchets()
+
+    def _stage_next_epoch_receive_ratchets(self) -> None:
+        """Export new-epoch receive keys without replacing the live decrypt set."""
+        new_ratchets, leaf_export, member_leaves = self._export_receive_ratchets()
+        self._pending_receive_ratchets = new_ratchets
+        self._pending_leaf_export_ratchets = leaf_export
+        self._pending_member_leaf_indices = member_leaves
+        self._decryptors = {}
+
+    def _install_staged_receive_ratchets(self) -> None:
+        """Make staged opcode-29 receive keys current (opcode 22)."""
+        self._retain_current_receive_ratchets()
+        self._receive_ratchets = self._pending_receive_ratchets
+        self._leaf_export_ratchets = self._pending_leaf_export_ratchets
+        self._member_leaf_indices = self._pending_member_leaf_indices
+        self._pending_receive_ratchets = {}
+        self._pending_leaf_export_ratchets = {}
+        self._pending_member_leaf_indices = {}
+        self._decryptors = {}
+
     def _refresh_receive_ratchets(self) -> None:
         """
         Refresh receive ratchets for all current senders.
@@ -785,29 +919,14 @@ class DaveSession:
         """
         if self._group is None:
             return
-        from sorrydave.mls.group_state import export_sender_base_secret
-
-        # Retain current ratchets for transition period (protocol: up to ten seconds)
-        if self._receive_ratchets:
-            expiry = time.monotonic() + self._retention_seconds
-            self._retained_receive_ratchets.append((expiry, dict(self._receive_ratchets)))
-        # Evict expired retained ratchets
-        now = time.monotonic()
-        self._retained_receive_ratchets = [
-            (e, d) for e, d in self._retained_receive_ratchets if e > now
-        ]
-
-        new_ratchets: dict[int, KeyRatchet] = {}
-        own_leaf = self._group.own_leaf_index
-        for leaf_index, identity in iter_members(self._group):
-            if leaf_index == own_leaf:
-                continue
-            user_id = self._identity_to_user_id(identity)
-            if user_id is None:
-                user_id = leaf_index
-            base = export_sender_base_secret(self._group, user_id)
-            new_ratchets[user_id] = KeyRatchet(base, retention_seconds=self._retention_seconds)
+        self._retain_current_receive_ratchets()
+        new_ratchets, leaf_export, member_leaves = self._export_receive_ratchets()
         self._receive_ratchets = new_ratchets
+        self._leaf_export_ratchets = leaf_export
+        self._member_leaf_indices = member_leaves
+        self._pending_receive_ratchets = {}
+        self._pending_leaf_export_ratchets = {}
+        self._pending_member_leaf_indices = {}
         self._decryptors = {}
 
     @staticmethod
@@ -945,6 +1064,9 @@ class DaveSession:
         """
         Return decryptor for a specific remote sender.
 
+        Tries the live epoch first, then staged opcode-29 keys, retained
+        previous epochs, and leaf-index exporter fallbacks.
+
         Args:
             sender_id (int): Remote sender user ID.
 
@@ -954,22 +1076,51 @@ class DaveSession:
         Raises:
             KeyError: If no ratchet exists for the sender.
         """
-        if sender_id not in self._receive_ratchets:
+        sender_id = int(sender_id)
+        self._evict_expired_retained_ratchets()
+        if (
+            sender_id not in self._receive_ratchets
+            and sender_id not in self._pending_receive_ratchets
+            and not any(sender_id in retained for _expiry, retained in self._retained_receive_ratchets)
+        ):
             self._refresh_receive_ratchets()
-        if sender_id not in self._receive_ratchets:
+        primary = self._receive_ratchets.get(sender_id)
+        if primary is None:
+            primary = self._pending_receive_ratchets.get(sender_id)
+        if primary is None:
+            now = time.monotonic()
+            for expiry, retained in reversed(self._retained_receive_ratchets):
+                if expiry > now and sender_id in retained:
+                    primary = retained[sender_id]
+                    break
+        if primary is None:
             raise KeyError(f"No ratchet for sender {sender_id}")
+        now = time.monotonic()
+        fallbacks: list[tuple[float, KeyRatchet]] = []
+        seen: set[int] = {id(primary)}
+        pending = self._pending_receive_ratchets.get(sender_id)
+        if pending is not None and id(pending) not in seen:
+            fallbacks.append((now + self._retention_seconds, pending))
+            seen.add(id(pending))
+        for expiry, retained in self._retained_receive_ratchets:
+            if expiry <= now or sender_id not in retained:
+                continue
+            ratchet = retained[sender_id]
+            if id(ratchet) in seen:
+                continue
+            fallbacks.append((expiry, ratchet))
+            seen.add(id(ratchet))
+        for leaf_map in (self._leaf_export_ratchets, self._pending_leaf_export_ratchets):
+            leaf_ratchet = leaf_map.get(sender_id)
+            if leaf_ratchet is not None and id(leaf_ratchet) not in seen:
+                fallbacks.append((now + self._retention_seconds, leaf_ratchet))
+                seen.add(id(leaf_ratchet))
         cached = self._decryptors.get(sender_id)
         if cached is not None:
             return cached
-        now = time.monotonic()
-        fallbacks: list[tuple[float, KeyRatchet]] = [
-            (expiry, d[sender_id])
-            for expiry, d in self._retained_receive_ratchets
-            if expiry > now and sender_id in d
-        ]
         decryptor = FrameDecryptor(
             sender_id,
-            self._receive_ratchets[sender_id],
+            primary,
             passthrough=self._receive_passthrough,
             fallback_ratchets=fallbacks if fallbacks else None,
         )
@@ -982,17 +1133,23 @@ class DaveSession:
 
     def decrypt_frame(self, protocol_frame: bytes, sender_id: int) -> bytes:
         """Decrypt a protocol frame from ``sender_id``."""
-        return self.get_decryptor(int(sender_id)).decrypt(protocol_frame)
+        from sorrydave.exceptions import DecryptionError
+
+        sender_id = int(sender_id)
+        try:
+            return self.get_decryptor(sender_id).decrypt(protocol_frame)
+        except (DecryptionError, KeyError, ValueError):
+            self._decryptors.pop(sender_id, None)
+            return self.get_decryptor(sender_id).decrypt(protocol_frame)
 
 
 class SharedIdentityContext:
     """
-    Holds a single key package and key material for use across multiple DaveSessions.
+    Reuses one signature key across DaveSessions, with a fresh KeyPackage each time.
 
-    Use when the same identity (same signature keypair) must be used for all
-    concurrent voice gateway connections (e.g. voice channel and Go Live stream).
-    Create one SharedIdentityContext per local user, then pass its get_supplier()
-    to each DaveSession(local_user_id, identity_supplier=ctx.get_supplier()).
+    DAVE wants the same signature key for voice and Go Live. RFC 9420 §10.1
+    forbids reusing an HPKE ``init_key`` across KeyPackages, so each call to
+    the supplier generates new init and leaf encryption keys.
     """
 
     def __init__(
@@ -1001,23 +1158,20 @@ class SharedIdentityContext:
         crypto: Union[DefaultCryptoProvider, None] = None,
     ) -> None:
         """
-        Create a shared identity context and generate one key package.
+        Create a shared identity and its signature key.
 
         Args:
             local_user_id (int): Local user identifier (e.g. Discord snowflake).
             crypto (Union[DefaultCryptoProvider, None]): MLS crypto provider; uses default if None.
         """
-        from sorrydave.mls.group_state import create_key_package
+        from sorrydave.mls.group_state import _p256_signing_keypair
 
         if crypto is None:
             crypto = get_dave_crypto_provider()
-        kp_bytes, hpke_private, signing_der, encryption_private = create_key_package(
-            local_user_id, crypto
-        )
-        self._key_package_bytes = kp_bytes
-        self._hpke_private_key = hpke_private
+        signing_der, _public = _p256_signing_keypair()
+        self._local_user_id = int(local_user_id)
+        self._crypto = crypto
         self._signing_key_der = signing_der
-        self._encryption_private_key = encryption_private
 
     @classmethod
     def from_persistent_key(
@@ -1029,33 +1183,31 @@ class SharedIdentityContext:
         """
         Build a shared identity from a stored persistent signature private key.
 
-        HPKE init/encryption keys are still ephemeral per key package; only the
-        MLS signature keypair is reused (protocol.md persistent identity).
+        HPKE init and encryption keys are generated fresh for every KeyPackage.
         """
-        from sorrydave.mls.group_state import create_key_package
-
         ctx = cls.__new__(cls)
         if crypto is None:
             crypto = get_dave_crypto_provider()
-        kp_bytes, hpke_private, signing_der, encryption_private = create_key_package(
-            local_user_id, crypto, signing_key_der=private_key_der
-        )
-        ctx._key_package_bytes = kp_bytes
-        ctx._hpke_private_key = hpke_private
-        ctx._signing_key_der = signing_der
-        ctx._encryption_private_key = encryption_private
+        ctx._local_user_id = int(local_user_id)
+        ctx._crypto = crypto
+        ctx._signing_key_der = private_key_der
         return ctx
 
     def get_supplier(self) -> Callable[[], tuple[bytes, bytes, bytes, bytes]]:
         """
-        Return a callable that returns
+        Return a callable that returns a new
         (key_package_bytes, init_private_key, signing_key_der, encryption_private_key).
 
         Pass this to DaveSession(..., identity_supplier=ctx.get_supplier()).
+        Each call mints a new KeyPackage. The signing key stays the same.
         """
-        return lambda: (
-            self._key_package_bytes,
-            self._hpke_private_key,
-            self._signing_key_der,
-            self._encryption_private_key,
-        )
+        from sorrydave.mls.group_state import create_key_package
+
+        def _supply() -> tuple[bytes, bytes, bytes, bytes]:
+            return create_key_package(
+                self._local_user_id,
+                self._crypto,
+                signing_key_der=self._signing_key_der,
+            )
+
+        return _supply

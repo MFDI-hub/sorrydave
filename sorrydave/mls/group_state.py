@@ -88,105 +88,6 @@ def _rfc9420_dave_commit_interop() -> Iterator[None]:
         yield
 
 
-def _stored_leaf_parent_hash(tree: Any, leaf_index: int, compute: Any) -> bytes:
-    """Return the leaf's stored parent_hash so rfc9420's extra Welcome check is a no-op."""
-    node = tree.get_node(int(leaf_index) * 2)
-    leaf = getattr(node, "leaf_node", None)
-    stored = getattr(leaf, "parent_hash", None) or b""
-    if stored:
-        return bytes(stored)
-    return compute(tree, leaf_index)
-
-
-def _bind_welcome_stored_leaf_parent_hash(tree: Any, compute: Any) -> Any:
-    """Bind a stored-hash lookup on this tree instance (beats subclass MRO)."""
-
-    def _stored(leaf_index: int, _tree: Any = tree, _compute: Any = compute) -> bytes:
-        return _stored_leaf_parent_hash(_tree, leaf_index, _compute)
-
-    tree._compute_parent_hash_for_leaf = _stored
-    return tree
-
-
-def _install_rfc9420_welcome_parent_hash_fix() -> None:
-    """Interop for Discord occupied-join Welcomes (RFC 9420 §7.9 / §12.4.3.1).
-
-    rfc9420's Welcome path recomputes every leaf ``parent_hash`` and rejects
-    Discord/libdave trees after several add/remove epochs (unmerged leaves make
-    ``original_sibling_tree_hash`` disagree). Join authentication is already
-    covered by the signed GroupInfo, matching tree hash, and §7.9.2 parent-hash
-    chains. Skip only that extra leaf equality check during ``from_welcome``.
-    """
-    from rfc9420.group.mls_group import processing as mls_processing
-    from rfc9420.group.mls_group.processing import MLSGroup as ProtocolMLSGroup
-    from rfc9420.protocol.tree import tree_math
-    from rfc9420.protocol.tree.ratchet_tree import RatchetTree
-
-    current = getattr(RatchetTree, "_compute_parent_hash_for_leaf", None)
-    if current is None or not getattr(current, "_sorrydave_one_hop", False):
-        def _compute_parent_hash_for_leaf(self: Any, leaf_index: int) -> bytes:
-            if self.n_leaves == 0:
-                return b""
-            leaf_node_index = int(leaf_index) * 2
-            root_idx = tree_math.root(self.n_leaves)
-            if leaf_node_index == root_idx:
-                return b""
-            p_idx = leaf_node_index
-            found = False
-            while p_idx != root_idx:
-                p_idx = tree_math.parent(p_idx, self.n_leaves)
-                if self.get_node(p_idx).public_key:
-                    found = True
-                    break
-            if not found or not self.get_node(p_idx).public_key:
-                return b""
-            l_child = tree_math.left(p_idx)
-            r_child = tree_math.right(p_idx, self.n_leaves)
-            if leaf_node_index == l_child or self._is_leaf_descendant_of(
-                int(leaf_index), l_child
-            ):
-                s_idx = r_child
-            else:
-                s_idx = l_child
-            result: bytes = self._compute_parent_hash_of_parent_node(p_idx, s_idx)
-            return result
-
-        cast(Any, _compute_parent_hash_for_leaf)._sorrydave_one_hop = True
-        RatchetTree._compute_parent_hash_for_leaf = _compute_parent_hash_for_leaf
-
-    orig_from_welcome = ProtocolMLSGroup.from_welcome
-    orig_from_welcome_fn = getattr(orig_from_welcome, "__func__", orig_from_welcome)
-    if getattr(orig_from_welcome_fn, "_sorrydave_skip_leaf_ph", False):
-        return
-
-    orig_create_tree = mls_processing.create_tree_backend
-
-    def from_welcome(cls: Any, *args: Any, **kwargs: Any) -> Any:
-        compute = RatchetTree._compute_parent_hash_for_leaf
-
-        def _stored_on_class(self: Any, leaf_index: int) -> bytes:
-            return _stored_leaf_parent_hash(self, leaf_index, compute)
-
-        def create_tree(*tree_args: Any, **tree_kwargs: Any) -> Any:
-            return _bind_welcome_stored_leaf_parent_hash(
-                orig_create_tree(*tree_args, **tree_kwargs), compute
-            )
-
-        RatchetTree._compute_parent_hash_for_leaf = _stored_on_class
-        cast(Any, mls_processing).create_tree_backend = create_tree
-        try:
-            return orig_from_welcome_fn(cls, *args, **kwargs)
-        finally:
-            RatchetTree._compute_parent_hash_for_leaf = compute
-            mls_processing.create_tree_backend = orig_create_tree
-
-    cast(Any, from_welcome)._sorrydave_skip_leaf_ph = True
-    cast(Any, ProtocolMLSGroup).from_welcome = classmethod(from_welcome)
-
-
-_install_rfc9420_welcome_parent_hash_fix()
-
-
 def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
     """Read MLS-style varint from data at offset. Returns (value, new_offset)."""
     if offset >= len(data):
@@ -617,12 +518,6 @@ def join_from_welcome(
 
     if crypto is None:
         crypto = get_dave_crypto_provider()
-    _install_rfc9420_welcome_parent_hash_fix()
-    _welcome_fn = getattr(
-        ProtocolMLSGroup.from_welcome, "__func__", ProtocolMLSGroup.from_welcome
-    )
-    if not getattr(_welcome_fn, "_sorrydave_skip_leaf_ph", False):
-        raise InvalidCommitError("rfc9420 Welcome parent_hash skip was not installed")
     storage = MemoryStorageProvider()
     config = GroupConfig(crypto_provider=crypto, storage_provider=storage)
     welcome = Welcome.deserialize(welcome_bytes)
@@ -714,6 +609,24 @@ def _iter_members(session: MLSGroupSession) -> list[tuple[int, bytes]]:
     return iter_members(session)
 
 
+def _reject_inline_commit_proposals(commit_mls_plaintext_bytes: bytes) -> None:
+    """DAVE client commit validity: proposals must be references, not inline."""
+    from rfc9420.interop.wire import decode_handshake
+    from rfc9420.messages.data_structures import Commit, ProposalOrRefType
+    from rfc9420.messages.messages import ContentType
+
+    msg = decode_handshake(commit_mls_plaintext_bytes)
+    framed = msg.auth_content.tbs.framed_content
+    if int(framed.content_type) != int(ContentType.COMMIT):
+        return
+    commit = Commit.deserialize(framed.content)
+    for proposal in commit.proposals:
+        if proposal.typ != ProposalOrRefType.REFERENCE:
+            raise InvalidCommitError(
+                "DAVE commits must contain only cached proposal references"
+            )
+
+
 def _check_no_duplicate_credentials(session: MLSGroupSession) -> None:
     """
     Raise InvalidCommitError if the group tree has duplicate basic credentials (user IDs).
@@ -744,9 +657,9 @@ def apply_commit(
     """
     Apply a received commit to the group.
 
-    Used by DaveSession when handle_commit is called. Per DAVE client commit validity,
-    raises InvalidCommitError if the resulting group would have duplicate basic
-    credentials (user IDs).
+    Used by DaveSession when handle_commit is called. DAVE client commit validity
+    requires every proposal in the commit to be a cached proposal reference, and
+    rejects a resulting tree with duplicate basic credentials (user IDs).
 
     Args:
         session (MLSGroupSession): MLS group session.
@@ -757,7 +670,9 @@ def apply_commit(
         InvalidCommitError: If commit application fails or duplicate credentials.
     """
     try:
-        session.apply_commit(commit_mls_plaintext_bytes, sender_leaf_index)
+        _reject_inline_commit_proposals(commit_mls_plaintext_bytes)
+        with _rfc9420_dave_commit_interop():
+            session.apply_commit(commit_mls_plaintext_bytes, sender_leaf_index)
         _check_no_duplicate_credentials(session)
     except InvalidCommitError:
         raise
@@ -784,66 +699,14 @@ def process_proposal(
         sender_type (int): 1 = MEMBER, 2 = EXTERNAL. Defaults to 1.
     """
     from rfc9420.interop.wire import decode_handshake
-    from rfc9420.messages.data_structures import RemoveProposal
 
     msg = decode_handshake(proposal_mls_plaintext_bytes)
-    inner = session._group._inner
-    removed_leaf_indices = {
-        int(proposal.removed)
-        for proposal in getattr(inner, "_pending_proposals", ())
-        if isinstance(proposal, RemoveProposal)
-    }
-    if not removed_leaf_indices:
-        session._group.process_proposal(
-            msg, sender_leaf_index, sender_type=int(SenderType(sender_type))
-        )
-        return
-
-    # rfc9420 1.3.0 validates an Add against the current tree before commit
-    # creation. Discord commonly sends Remove(old leaf) followed by Add(new key
-    # package) for the same user in separate op27 messages. The final tree is
-    # valid because commits apply Removes before Adds, but the eager uniqueness
-    # check sees the old leaf and rejects the Add. Ignore only leaves already
-    # covered by a pending Remove; commit creation still validates the complete
-    # resulting tree.
-    from unittest.mock import patch
-
-    from rfc9420.group.mls_group import processing as mls_processing
-    from rfc9420.mls.exceptions import CommitValidationError
-
-    def validate_with_pending_removals(
-        ratchet_tree: Any,
-        leaf_node: Any,
-        replacing_leaf_index: int | None = None,
-    ) -> None:
-        if leaf_node is None:
-            return
-        candidate_signature = getattr(leaf_node, "signature_key", b"")
-        candidate_encryption = getattr(leaf_node, "encryption_key", b"")
-        for index in range(getattr(ratchet_tree, "n_leaves", 0)):
-            if index in removed_leaf_indices or index == replacing_leaf_index:
-                continue
-            node = ratchet_tree.get_node(index * 2)
-            if node is None or node.leaf_node is None:
-                continue
-            other = node.leaf_node
-            if candidate_signature and getattr(other, "signature_key", b"") == candidate_signature:
-                raise CommitValidationError(
-                    f"duplicate signature_key detected at leaf {index}"
-                )
-            if candidate_encryption and getattr(other, "encryption_key", b"") == candidate_encryption:
-                raise CommitValidationError(
-                    f"duplicate encryption_key detected at leaf {index}"
-                )
-
-    with _PROPOSAL_VALIDATION_PATCH_LOCK, patch.object(
-        mls_processing,
-        "validate_leaf_node_unique_against_tree",
-        validate_with_pending_removals,
-    ):
-        session._group.process_proposal(
-            msg, sender_leaf_index, sender_type=int(SenderType(sender_type))
-        )
+    # Pending Removes are ignored by rfc9420's Add uniqueness check
+    # (validate_leaf_node_unique_against_tree(..., ignored_leaf_indices=...)).
+    # Commit creation still validates the tree after Removes are applied.
+    session._group.process_proposal(
+        msg, sender_leaf_index, sender_type=int(SenderType(sender_type))
+    )
 
 
 def stage_commit_and_welcome(
@@ -932,11 +795,17 @@ def create_update_proposal(
     crypto: Union[DefaultCryptoProvider, None] = None,
 ) -> bytes:
     """
-    Create an MLS Update proposal to refresh the local member's leaf node keys.
+    Create an MLS Update proposal to refresh the local member's leaf encryption key.
+
+    The signature key is the member's existing ``signing_key_der``. A new HPKE
+    encryption keypair is generated. The private half is stored on
+    ``session._pending_leaf_encryption_private_key`` and must replace the
+    member's leaf encryption key before this update is committed; otherwise
+    the member cannot decrypt UpdatePath ciphertexts to the new leaf.
 
     Args:
         session (MLSGroupSession): MLS group session.
-        signing_key_der (bytes): Signing private key (DER) for the member.
+        signing_key_der (bytes): Existing P-256 signing private key (DER).
         user_id (int): User ID for credential (64-bit).
         crypto (Union[DefaultCryptoProvider, None]): Crypto provider; uses get_dave_crypto_provider() if None.
 
@@ -944,7 +813,7 @@ def create_update_proposal(
         bytes: Serialized MLS Plaintext proposal.
 
     Raises:
-        ValueError: If MLS ciphersuite is unknown.
+        ValueError: If MLS ciphersuite is unknown or signing_key_der is not P-256.
     """
     if crypto is None:
         crypto = get_dave_crypto_provider()
@@ -956,8 +825,9 @@ def create_update_proposal(
     from rfc9420.messages.key_packages import LeafNode, LeafNodeSource
 
     _dave_cipher_suite()
-    _, enc_public = crypto.generate_key_pair()
-    sig_private_der, sig_public_bytes = _p256_signing_keypair()
+    enc_private, enc_public = crypto.generate_key_pair()
+    sig_private_der = signing_key_der
+    sig_public_bytes = _p256_public_from_der(signing_key_der)
     identity = user_id.to_bytes(8, "big")
     credential = Credential(
         identity=identity,
@@ -989,4 +859,5 @@ def create_update_proposal(
         extensions=[],
         signature=Signature(leaf_sig),
     )
+    cast(Any, session)._pending_leaf_encryption_private_key = enc_private
     return session.update_self(leaf_node, signing_key_der)

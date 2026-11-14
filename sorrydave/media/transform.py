@@ -211,10 +211,13 @@ def _parse_supplemental_from_tail(frame: bytes) -> tuple[ProtocolSupplementalDat
         except ValueError as e:
             raise DecryptionError("Truncated range in supplemental") from e
         ranges.append(UnencryptedRange(offset=off_val, length=len_val))
-    # Validate ranges: non-overlapping, sorted
-    for i in range(len(ranges) - 1):
-        if ranges[i].offset + ranges[i].length > ranges[i + 1].offset:
-            raise DecryptionError("Overlapping or unsorted unencrypted ranges")
+    # Same bounds, overlap, and order checks as protocol_frame_check.
+    prev_end = 0
+    interleaved_len = suppl_content_start
+    for r in ranges:
+        if r.offset < prev_end or r.offset + r.length > interleaved_len:
+            raise DecryptionError("Overlapping, unsorted, or out-of-bounds unencrypted ranges")
+        prev_end = r.offset + r.length
     data = ProtocolSupplementalData(
         tag_8=tag_8,
         nonce_32=nonce_32,
@@ -278,6 +281,8 @@ class FrameEncryptor:
             self._generation_wrap_count += 1
         n = self._nonce
         generation = (n >> 24) + self._generation_wrap_count * 256
+        if generation > 0xFFFFFFFF:
+            raise ValueError("encryptor generation exhausted; refusing to reuse keys")
         return n, generation
 
     def encrypt(self, encoded_frame: bytes, codec: str) -> bytes:
@@ -359,7 +364,9 @@ class FrameDecryptor:
         """
         self._sender_user_id = sender_user_id
         self._ratchet = ratchet
+        # (generation, nonce). Bounded so a long call cannot grow without limit.
         self._used_nonces: set[tuple[int, int]] = set()
+        self._replay_window = 4096
         self._passthrough = passthrough
         self._fallback_ratchets = list(fallback_ratchets) if fallback_ratchets else []
         # For nonce wrap: generation continues past 255 (protocol)
@@ -385,6 +392,15 @@ class FrameDecryptor:
             self._wrap_count += 1
             self._seen_high_nonce = False
 
+    def _remember_nonce(self, generation: int, nonce_32: int) -> None:
+        """Record a consumed (generation, nonce) inside a bounded window."""
+        self._used_nonces.add((int(generation), int(nonce_32)))
+        overflow = len(self._used_nonces) - self._replay_window
+        if overflow <= 0:
+            return
+        for item in sorted(self._used_nonces)[:overflow]:
+            self._used_nonces.discard(item)
+
     def decrypt(self, protocol_frame: bytes) -> bytes:
         """
         Parse footer, get key for generation (from nonce MSB, with wrap), verify tag, decrypt.
@@ -404,7 +420,8 @@ class FrameDecryptor:
             return protocol_frame
         suppl, interleaved_end = _parse_supplemental_from_tail(protocol_frame)
         interleaved = protocol_frame[:interleaved_end]
-        if (self._sender_user_id, suppl.nonce_32) in self._used_nonces:
+        generation_hint = self._generation_from_nonce(suppl.nonce_32)
+        if (generation_hint, suppl.nonce_32) in self._used_nonces:
             raise DecryptionError("Nonce reuse")
         msb = (suppl.nonce_32 >> 24) & 0xFF
         generation = self._generation_from_nonce(suppl.nonce_32)
@@ -419,7 +436,7 @@ class FrameDecryptor:
                 suppl.unencrypted_ranges,
             )
             self._apply_nonce_seen(suppl.nonce_32)
-            self._used_nonces.add((self._sender_user_id, suppl.nonce_32))
+            self._remember_nonce(generation, suppl.nonce_32)
             return plain
         except (DecryptionError, ValueError) as e:
             last_error = e
@@ -436,7 +453,7 @@ class FrameDecryptor:
                     suppl.unencrypted_ranges,
                 )
                 self._apply_nonce_seen(suppl.nonce_32)
-                self._used_nonces.add((self._sender_user_id, suppl.nonce_32))
+                self._remember_nonce(alt_generation, suppl.nonce_32)
                 return plain
             except (DecryptionError, ValueError):
                 pass
@@ -455,7 +472,7 @@ class FrameDecryptor:
                     suppl.tag_8,
                     suppl.unencrypted_ranges,
                 )
-                self._used_nonces.add((self._sender_user_id, suppl.nonce_32))
+                self._remember_nonce(gen, suppl.nonce_32)
                 return plain
             except (DecryptionError, ValueError):
                 continue
